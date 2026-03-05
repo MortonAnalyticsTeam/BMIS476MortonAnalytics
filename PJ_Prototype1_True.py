@@ -2,7 +2,8 @@
 For the DDT Team: READ ME
 I made a description of how to download the functions necessary for this function.
 They are viewable on line 60. You can follow the directions to get the errors out. 
-The code should run well after this
+The code should run well after this. You can view a description of each system and function.
+That can be found in the Google Drive or in the README file. 
 
 ================================================================================
 DDT — GEN AI DATA PROCESSING AND ANALYTICS SOLUTION
@@ -1345,17 +1346,20 @@ def run_pipeline(input_path: str,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "DDT — GEN AI AIS Event Detection & Labeling System\n"
+            "DDT � GEN AI AIS Event Detection & Labeling System"
+        
             "Detects ARRIVAL, DEPARTURE, ANCHORING, ROUTE_DEVIATION, "
             "and PROXIMITY events from AIS vessel tracking data."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    # Required: input file path
+    # Optional: input file path (if not provided, file browser opens)
     parser.add_argument(
         "input",
-        help="Path to AIS input file (.csv, .json, .nmea/.txt/.ais)"
+        nargs="?",
+        default=None,
+        help="Path to AIS input file (.csv, .json, .nmea/.txt/.ais). If omitted, a file browser will open."
     )
 
     # Optional: output directory
@@ -1371,8 +1375,8 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help=(
-            "Generate natural-language AI summaries for each event (Req #9).\n"
-            "Requires: ANTHROPIC_API_KEY environment variable to be set.\n"
+            "Generate natural-language AI summaries for each event (Req #9)."
+            "Requires: ANTHROPIC_API_KEY environment variable to be set."
             "Example: export ANTHROPIC_API_KEY=sk-ant-..."
         )
     )
@@ -1391,9 +1395,14 @@ if __name__ == "__main__":
     if args.max_summaries is not None:
         CONFIG["ai_summary_max_events"] = args.max_summaries
 
-    # Run the pipeline
-    run_pipeline(
-        input_path=args.input,
-        output_dir=args.output_dir,
-        ai_summaries=args.ai_summaries,
-    )
+    # If no input file given, open file browser and run pipeline on the result
+    if args.input is None:
+        df = import_dataset()
+        if df is not None:
+            run_pipeline_from_df(df, output_dir=args.output_dir, ai_summaries=args.ai_summaries)
+    else:
+        run_pipeline(
+            input_path=args.input,
+            output_dir=args.output_dir,
+            ai_summaries=args.ai_summaries,
+        )
