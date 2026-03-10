@@ -198,6 +198,99 @@ def import_dataset(preview_rows: int = 10,
         df = import_dataset(preview_rows=5) # Save only 5 rows in preview
         labeled_df, events_df = run_pipeline_from_df(df)
     """
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTION 1C: DATE FILTER
+# Lets you process just one day (or a few days) instead of the full year.
+# Applied right after column resolution, before any detection runs.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def filter_by_dates(df, time_col, dates):
+    """
+    Filter DataFrame to rows whose date matches any entry in the dates list.
+    dates: list of date strings in YYYY-MM-DD format.
+    """
+    date_series = pd.to_datetime(df[time_col], errors="coerce").dt.date
+    target_dates = []
+    for d in dates:
+        try:
+            target_dates.append(pd.to_datetime(d.strip()).date())
+        except Exception:
+            print("[FILTER] WARNING: Could not parse date '{}' -- skipping.".format(d))
+    if not target_dates:
+        print("[FILTER] No valid dates -- processing all rows.")
+        return df
+    filtered = df[date_series.isin(target_dates)].copy()
+    pct = 100 * len(filtered) / len(df) if len(df) else 0
+    print("[FILTER] Kept {:,} rows across {} date(s) ({:.2f}% of dataset)".format(
+        len(filtered), len(target_dates), pct))
+    return filtered
+
+
+def prompt_date_filter(df, time_col):
+    """
+    Interactive menu: process all rows, or filter to specific date(s).
+    Returns (filtered_df, date_label) where date_label is used in output filenames.
+    """
+    total = len(df)
+    parsed = pd.to_datetime(df[time_col], errors="coerce").dt.date
+    min_date = parsed.min()
+    max_date = parsed.max()
+
+    print()
+    print("=" * 60)
+    print("  DATE FILTER")
+    print("=" * 60)
+    print("  Dataset range : {}  to  {}".format(min_date, max_date))
+    print("  Total rows    : {:,}".format(total))
+    print()
+    print("  1. Process ALL rows (full dataset -- may be slow)")
+    print("  2. Filter to specific day(s)  [recommended for testing]")
+    print()
+
+    while True:
+        choice = input("  Enter choice (1 or 2): ").strip()
+        if choice in ("1", "2"):
+            break
+        print("  Please enter 1 or 2.")
+
+    if choice == "1":
+        print("[FILTER] Processing all {:,} rows.".format(total))
+        return df, "all"
+
+    print()
+    print("  Enter date(s) in YYYY-MM-DD format.")
+    print("  Single day    : 2023-06-15")
+    print("  Multiple days : 2023-06-15, 2023-07-04, 2023-12-25")
+    print()
+
+    while True:
+        raw = input("  Date(s): ").strip()
+        if raw:
+            break
+        print("  Please enter at least one date.")
+
+    dates = [d.strip() for d in raw.split(",") if d.strip()]
+    filtered = filter_by_dates(df, time_col, dates)
+
+    if filtered.empty:
+        print("[FILTER] WARNING: No data for those dates -- falling back to all rows.")
+        return df, "all"
+
+    unique_dates = sorted(
+        pd.to_datetime(filtered[time_col], errors="coerce")
+        .dt.strftime("%Y-%m-%d").dropna().unique()
+    )
+    if len(unique_dates) == 1:
+        label = unique_dates[0]
+    elif len(unique_dates) == 2:
+        label = "_".join(unique_dates)
+    else:
+        label = "{}_to_{}".format(unique_dates[0], unique_dates[-1])
+
+    return filtered, label
+
+
+
 
     # ── Step 1: Open file browser dialog ─────────────────────────────────────
     # Hide the root tkinter window — we only want the file picker
@@ -209,7 +302,7 @@ def import_dataset(preview_rows: int = 10,
 
     filepath = filedialog.askopenfilename(
         title="Select your AIS Dataset",
-        initialdir="C:/Users/matth/BMIS_Projects_2026",
+        initialdir="C:/Users/matth/BMIS_Projects_2026", #placeholder for me as the main user
         filetypes=[
             ("All supported files", "*.csv *.json *.nmea *.txt *.ais"),
             ("CSV files",           "*.csv"),
@@ -306,6 +399,7 @@ def run_pipeline_from_df(df: pd.DataFrame,
     print(f"  NAME  → {repr(cols['name'])}")
 
     # Run event detection
+    df, date_label = prompt_date_filter(df, cols["time"])
     events_df = detect_events(df, cols)
 
     # Optional AI summaries
