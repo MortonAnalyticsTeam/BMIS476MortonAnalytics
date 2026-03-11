@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(.venv/Scripts/pip install pyais)",
-      "Bash(.venv/Scripts/pip install anthropic)"
+      "Bash(.venv/Scripts/pip install anthropic)",
+      "Bash(python -m py_compile PJ_Prototype1_True.py)",
+      "Bash(python PJ_Prototype1_True.py AIS_2024_01_01.csv --output-dir ./output_test)",
+      "Bash(printf \"2\\\\n2024-01-01\\\\n\")",
+      "Bash(tasklist)",
+      "Bash(findstr python:*)",
+      "Bash(taskkill /F /PID 29372 /PID 40200)",
+      "Bash(taskkill -F -PID 29372)",
+      "Bash(taskkill -F -PID 40200)",
+      "Bash(taskkill -F -PID 51408)",
+      "Bash(taskkill -F -PID 42164)",
+      "Bash(printf \"1\\\\n\")",
+      "Bash(python PJ_Prototype1_True.py test_mini.csv --output-dir ./output_test)"
     ]
   }
 }
