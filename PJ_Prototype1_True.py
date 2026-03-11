@@ -88,20 +88,32 @@ USAGE:
 
 # ── Standard library imports ──────────────────────────────────────────────────
 import os
+import sys
 import json
 import math
 import uuid
 import time
 import argparse
 import warnings
-from datetime import datetime
-from typing import Optional, Tuple
+from datetime import datetime, timezone
+from typing import Optional
+
+# Ensure Unicode characters (arrows, dashes, etc.) print correctly on all platforms
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # ── Third-party imports ───────────────────────────────────────────────────────
 import pandas as pd
 import numpy as np
-import anthropic 
-from pyais import decode
+try:
+    import anthropic
+except ImportError:
+    anthropic = None  # type: ignore
+
+try:
+    import pyais  # noqa: F401 — imported for availability check; used inside load_nmea()
+except ImportError:
+    pyais = None  # type: ignore
 
 # Suppress pandas performance warnings for large frame operations
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
@@ -198,6 +210,163 @@ def import_dataset(preview_rows: int = 10,
         df = import_dataset(preview_rows=5) # Save only 5 rows in preview
         labeled_df, events_df = run_pipeline_from_df(df)
     """
+
+    # ── Step 1: Open file browser dialog ─────────────────────────────────────
+    # Hide the root tkinter window — we only want the file picker
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)  # Bring dialog to front of VS Code
+
+    print("[IMPORT] Opening file browser — select your AIS dataset...")
+
+    filepath = filedialog.askopenfilename(
+        title="Select your AIS Dataset",
+        filetypes=[
+            ("All supported files", "*.csv *.json *.nmea *.txt *.ais"),
+            ("CSV files",           "*.csv"),
+            ("JSON files",          "*.json"),
+            ("NMEA AIS files",      "*.nmea *.txt *.ais"),
+            ("All files",           "*.*"),
+        ]
+    )
+
+    root.destroy()  # Clean up the hidden tkinter window
+
+    # User cancelled the dialog
+    if not filepath:
+        print("[IMPORT] No file selected. Exiting.")
+        return None
+
+    print(f"[IMPORT] Selected: {filepath}")
+
+    # ── Step 2: Load the full dataset into memory ONLY ────────────────────────
+    # load_file() reads the data but does NOT write anything to your project.
+    # The DataFrame lives only in RAM — gone when the script ends.
+    # This means no giant files sitting in your VS Code workspace or on GitHub.
+    try:
+        df = load_file(filepath)
+    except Exception as e:
+        print(f"[IMPORT] ERROR: Failed to load file — {e}")
+        return None
+
+    # ── Step 3: Show a quick preview in the console ───────────────────────────
+    print(f"\n[IMPORT] ── Dataset Preview (first {min(preview_rows, len(df))} rows) ──")
+    print(df.head(preview_rows).to_string(index=False))
+    print(f"\n[IMPORT] Shape   : {df.shape[0]:,} rows × {df.shape[1]} columns")
+    print(f"[IMPORT] Columns : {list(df.columns)}")
+
+    # ── Step 4: Save a small preview file (optional) ──────────────────────────
+    # This tiny file (10 rows) IS saved to disk — safe to commit to GitHub.
+    # Useful for teammates or documentation to understand the data structure.
+    if save_preview and len(df) > 0:
+        os.makedirs(preview_dir, exist_ok=True)
+
+        # Name the preview file after the original dataset
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        preview_path = os.path.join(preview_dir, f"{base_name}_preview.csv")
+
+        df.head(preview_rows).to_csv(preview_path, index=False)
+        print(f"\n[IMPORT] Preview saved → {preview_path}")
+        print(f"         ({preview_rows} rows only — safe to commit to GitHub)")
+
+    print(f"\n[IMPORT] Full dataset ({df.shape[0]:,} rows) is loaded in memory only.")
+    print(f"         It will NOT be written to your project folder.")
+    print(f"         ✓ Your GitHub repo stays clean.\n")
+
+    return df
+
+
+def run_pipeline_from_df(df: pd.DataFrame,
+                          output_dir: str = "./output",
+                          ai_summaries: bool = False):
+    """
+    Run the full DDT pipeline on an already-loaded DataFrame.
+    Use this after import_dataset() so you don't re-load the file.
+
+    This version skips the file loading step and goes straight to
+    column resolution, event detection, and export.
+
+    Args:
+        df           : DataFrame returned by import_dataset()
+        output_dir   : Where to save the labeled output CSVs
+        ai_summaries : Whether to generate Claude AI summaries (Req #9)
+
+    Returns:
+        labeled_df   : Original data + new event label columns
+        events_df    : Events-only summary DataFrame
+
+    Example:
+        df = import_dataset()
+        labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
+    """
+    if df is None or df.empty:
+        print("[ERROR] No data to process. Run import_dataset() first.")
+        return None, None
+
+    print("=" * 60)
+    print("  DDT — PIPELINE RUNNING ON IMPORTED DATASET")
+    print("=" * 60)
+
+    start_time = time.time()
+
+    # Resolve column names from the loaded DataFrame
+    print_section("COLUMN RESOLUTION")
+    cols = resolve_columns(df)
+    print(f"  MMSI  → '{cols['mmsi']}'")
+    print(f"  LAT   → '{cols['lat']}'")
+    print(f"  LON   → '{cols['lon']}'")
+    print(f"  TIME  → '{cols['time']}'")
+    print(f"  SOG   → {repr(cols['sog'])}")
+    print(f"  COG   → {repr(cols['cog'])}")
+    print(f"  NAME  → {repr(cols['name'])}")
+
+    # -- Date filter: choose all rows or specific day(s) before processing
+    df, date_label = prompt_date_filter(df, cols["time"])
+
+    # Run event detection
+    events_df = detect_events(df, cols)
+
+    # Optional AI summaries
+    if ai_summaries and events_df is not None and not events_df.empty:
+        events_df = generate_ai_summaries(events_df)
+
+    # Merge labels into original DataFrame
+    labeled_df = build_labeled_dataset(df, events_df, cols)
+
+    # Export outputs -- date label in filename prevents overwriting previous runs
+    print_section("EXPORTING OUTPUTS  (Req #6, #8)")
+    os.makedirs(output_dir, exist_ok=True)
+
+    file_prefix = date_label if date_label != "all" else "full_dataset"
+    labeled_path = os.path.join(output_dir, file_prefix + "_labeled.csv")
+    export_csv(labeled_df, labeled_path, label="Full labeled dataset")
+
+    if events_df is not None and not events_df.empty:
+        events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
+        export_csv(events_df, events_path, label="Events summary")
+
+    # Summary
+    print_pipeline_summary("imported_dataset", labeled_df, events_df, output_dir)
+
+    elapsed = time.time() - start_time
+    print(f"  Total runtime  : {elapsed:.1f} seconds")
+    print("=" * 60 + "\n")
+
+    return labeled_df, events_df
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HOW TO USE — run these two lines at the bottom of your script
+# (or in a new cell if using Jupyter):
+#
+#   df = import_dataset()                          # Opens file browser
+#   labeled_df, events_df = run_pipeline_from_df(df)
+#
+# With AI summaries:
+#   labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 1C: DATE FILTER
 # Lets you process just one day (or a few days) instead of the full year.
@@ -289,158 +458,6 @@ def prompt_date_filter(df, time_col):
 
     return filtered, label
 
-
-
-
-    # ── Step 1: Open file browser dialog ─────────────────────────────────────
-    # Hide the root tkinter window — we only want the file picker
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)  # Bring dialog to front of VS Code
-
-    print("[IMPORT] Opening file browser — select your AIS dataset...")
-
-    filepath = filedialog.askopenfilename(
-        title="Select your AIS Dataset",
-        initialdir="C:/Users/matth/BMIS_Projects_2026", #placeholder for me as the main user
-        filetypes=[
-            ("All supported files", "*.csv *.json *.nmea *.txt *.ais"),
-            ("CSV files",           "*.csv"),
-            ("JSON files",          "*.json"),
-            ("NMEA AIS files",      "*.nmea *.txt *.ais"),
-            ("All files",           "*.*"),
-        ]
-    )
-
-    root.destroy()  # Clean up the hidden tkinter window
-
-    # User cancelled the dialog
-    if not filepath:
-        print("[IMPORT] No file selected. Exiting.")
-        return None
-
-    print(f"[IMPORT] Selected: {filepath}")
-
-    # ── Step 2: Load the full dataset into memory ONLY ────────────────────────
-    # load_file() reads the data but does NOT write anything to your project.
-    # The DataFrame lives only in RAM — gone when the script ends.
-    # This means no giant files sitting in your VS Code workspace or on GitHub.
-    df = load_file(filepath)
-
-    # ── Step 3: Show a quick preview in the console ───────────────────────────
-    print(f"\n[IMPORT] ── Dataset Preview (first {min(preview_rows, len(df))} rows) ──")
-    print(df.head(preview_rows).to_string(index=False))
-    print(f"\n[IMPORT] Shape   : {df.shape[0]:,} rows × {df.shape[1]} columns")
-    print(f"[IMPORT] Columns : {list(df.columns)}")
-
-    # ── Step 4: Save a small preview file (optional) ──────────────────────────
-    # This tiny file (10 rows) IS saved to disk — safe to commit to GitHub.
-    # Useful for teammates or documentation to understand the data structure.
-    if save_preview and len(df) > 0:
-        os.makedirs(preview_dir, exist_ok=True)
-
-        # Name the preview file after the original dataset
-        base_name = os.path.splitext(os.path.basename(filepath))[0]
-        preview_path = os.path.join(preview_dir, f"{base_name}_preview.csv")
-
-        df.head(preview_rows).to_csv(preview_path, index=False)
-        print(f"\n[IMPORT] Preview saved → {preview_path}")
-        print(f"         ({preview_rows} rows only — safe to commit to GitHub)")
-
-    print(f"\n[IMPORT] Full dataset ({df.shape[0]:,} rows) is loaded in memory only.")
-    print(f"         It will NOT be written to your project folder.")
-    print(f"         ✓ Your GitHub repo stays clean.\n")
-
-    return df
-
-
-def run_pipeline_from_df(df: pd.DataFrame,
-                          output_dir: str = "./output",
-                          ai_summaries: bool = False):
-    """
-    Run the full DDT pipeline on an already-loaded DataFrame.
-    Use this after import_dataset() so you don't re-load the file.
-
-    This version skips the file loading step and goes straight to
-    column resolution, event detection, and export.
-
-    Args:
-        df           : DataFrame returned by import_dataset()
-        output_dir   : Where to save the labeled output CSVs
-        ai_summaries : Whether to generate Claude AI summaries (Req #9)
-
-    Returns:
-        labeled_df   : Original data + new event label columns
-        events_df    : Events-only summary DataFrame
-
-    Example:
-        df = import_dataset()
-        labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
-    """
-    if df is None or df.empty:
-        print("[ERROR] No data to process. Run import_dataset() first.")
-        return None, None
-
-    print("=" * 60)
-    print("  DDT — PIPELINE RUNNING ON IMPORTED DATASET")
-    print("=" * 60)
-
-    start_time = time.time()
-
-    # Resolve column names from the loaded DataFrame
-    print_section("COLUMN RESOLUTION")
-    cols = resolve_columns(df)
-    print(f"  MMSI  → '{cols['mmsi']}'")
-    print(f"  LAT   → '{cols['lat']}'")
-    print(f"  LON   → '{cols['lon']}'")
-    print(f"  TIME  → '{cols['time']}'")
-    print(f"  SOG   → {repr(cols['sog'])}")
-    print(f"  COG   → {repr(cols['cog'])}")
-    print(f"  NAME  → {repr(cols['name'])}")
-
-    # Run event detection
-    df, date_label = prompt_date_filter(df, cols["time"])
-    events_df = detect_events(df, cols)
-
-    # Optional AI summaries
-    if ai_summaries and events_df is not None and not events_df.empty:
-        events_df = generate_ai_summaries(events_df)
-
-    # Merge labels into original DataFrame
-    labeled_df = build_labeled_dataset(df, events_df, cols)
-
-    # Export outputs
-    print_section("EXPORTING OUTPUTS  (Req #6, #8)")
-    os.makedirs(output_dir, exist_ok=True)
-
-    file_prefix = date_label if date_label != "all" else "full_dataset"
-    labeled_path = os.path.join(output_dir, file_prefix + "_labeled.csv")
-    export_csv(labeled_df, labeled_path, label="Full labeled dataset")
-
-    if events_df is not None and not events_df.empty:
-        events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
-        export_csv(events_df, events_path, label="Events summary")
-
-    # Summary
-    print_pipeline_summary("imported_dataset", labeled_df, events_df, output_dir)
-
-    elapsed = time.time() - start_time
-    print(f"  Total runtime  : {elapsed:.1f} seconds")
-    print("=" * 60 + "\n")
-
-    return labeled_df, events_df
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HOW TO USE — run these two lines at the bottom of your script
-# (or in a new cell if using Jupyter):
-#
-#   df = import_dataset()                          # Opens file browser
-#   labeled_df, events_df = run_pipeline_from_df(df)
-#
-# With AI summaries:
-#   labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
-# ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 2: UTILITY FUNCTIONS
@@ -675,7 +692,7 @@ def load_nmea(filepath: str) -> pd.DataFrame:
                     "VesselName":   getattr(decoded, "shipname", None),
                     # NMEA sentences don't always carry timestamps;
                     # use current UTC as a best-effort fallback
-                    "BaseDateTime": datetime.utcnow().isoformat(),
+                    "BaseDateTime": datetime.now(timezone.utc).isoformat(),
                 }
                 records.append(record)
             except Exception:
@@ -893,7 +910,7 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
         df.groupby(col_mmsi)[col_sog]
         .transform(lambda x: x.rolling(min_rows, min_periods=min_rows).min())
     )
-    anchoring_mask = df["_rolling_min_sog"] <= anc_max
+    anchoring_mask = df["_rolling_min_sog"].notna() & (df["_rolling_min_sog"] <= anc_max)
 
     # ── Build event records from masked rows ─────────────────────────────────
     # We iterate over the (small) matched subset, not the full 8M rows
@@ -1147,7 +1164,7 @@ def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
 
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-5",
                 max_tokens=100,  # Short summary — 1-2 sentences max
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1232,17 +1249,21 @@ def build_labeled_dataset(original_df: pd.DataFrame,
                                .dt.floor("min").astype(str))
 
     # Build the lookup — if multiple events match the same key, keep first
+    # PROXIMITY events store both MMSIs as "A & B"; split them so both vessels get tagged
     lookup = {}
     for _, ev in events_df.iterrows():
-        key = (ev["_key_mmsi"], ev["_key_ts"])
-        if key not in lookup:
-            lookup[key] = {
-                "event_id":         ev["event_id"],
-                "event_type":       ev["event_type"],
-                "confidence_score": ev["confidence_score"],
-                "null_flags":       ev["null_flags"],
-                "ai_summary":       ev.get("ai_summary", None),
-            }
+        ev_data = {
+            "event_id":         ev["event_id"],
+            "event_type":       ev["event_type"],
+            "confidence_score": ev["confidence_score"],
+            "null_flags":       ev["null_flags"],
+            "ai_summary":       ev.get("ai_summary", None),
+        }
+        mmsi_keys = [m.strip() for m in ev["_key_mmsi"].split(" & ")]
+        for mmsi_key in mmsi_keys:
+            key = (mmsi_key, ev["_key_ts"])
+            if key not in lookup:
+                lookup[key] = ev_data
 
     print(f"[OUTPUT] Lookup index built — {len(lookup):,} unique event keys.")
 
@@ -1309,7 +1330,7 @@ def export_csv(df: pd.DataFrame, filepath: str, label: str = "output"):
     """
     print(f"[EXPORT] Writing {label} → {filepath}")
     # chunksize here is for the CSV writer's internal buffer, not read chunks
-    df.to_csv(filepath, index=False, chunksize=100_000)
+    df.to_csv(filepath, index=False)
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     print(f"         Done — {len(df):,} rows | {size_mb:.1f} MB")
 
@@ -1335,7 +1356,7 @@ def print_pipeline_summary(input_path: str, labeled_df: pd.DataFrame,
 
     print(f"  Input file     : {os.path.basename(input_path)}")
     print(f"  Total rows     : {total_rows:,}")
-    print(f"  Labeled rows   : {labeled_rows:,} ({100*labeled_rows/total_rows:.2f}% of data)")
+    print(f"  Labeled rows   : {labeled_rows:,} ({(100*labeled_rows/total_rows if total_rows else 0.0):.2f}% of data)")
     print(f"  Output dir     : {output_dir}")
     print(f"\n  Event breakdown:")
     for etype, count in sorted(event_counts.items()):
@@ -1395,6 +1416,9 @@ def run_pipeline(input_path: str,
     print(f"  COG   → {repr(cols['cog'])} {'⚠ Deviation events will be skipped' if not cols['cog'] else ''}")
     print(f"  NAME  → {repr(cols['name'])}")
 
+    # ── Step 2.5: Date filter ─────────────────────────────────────────────────
+    df, date_label = prompt_date_filter(df, cols["time"])
+
     # ── Step 3: Event detection ───────────────────────────────────────────────
     events_df = detect_events(df, cols)
 
@@ -1412,14 +1436,15 @@ def run_pipeline(input_path: str,
     os.makedirs(output_dir, exist_ok=True)
 
     base = os.path.splitext(os.path.basename(input_path))[0]
+    file_prefix = (base + "_" + date_label) if date_label != "all" else base
 
     # Output 1: Full labeled dataset (original data + new event columns)
-    labeled_path = os.path.join(output_dir, f"{base}_labeled.csv")
+    labeled_path = os.path.join(output_dir, file_prefix + "_labeled.csv")
     export_csv(labeled_df, labeled_path, label="Full labeled dataset")
 
     # Output 2: Events-only summary (one row per event — for dashboards/analytics)
     if events_df is not None and not events_df.empty:
-        events_path = os.path.join(output_dir, f"{base}_events_summary.csv")
+        events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
         export_csv(events_df, events_path, label="Events summary")
     else:
         events_path = None
@@ -1443,8 +1468,7 @@ def run_pipeline(input_path: str,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "DDT -- GEN AI AIS Event Detection & Labeling System"
-        
+            "DDT -- GEN AI AIS Event Detection & Labeling System\n"
             "Detects ARRIVAL, DEPARTURE, ANCHORING, ROUTE_DEVIATION, "
             "and PROXIMITY events from AIS vessel tracking data."
         ),
@@ -1472,9 +1496,8 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help=(
-            "Generate natural-language AI summaries for each event (Req #9)."
-            "Requires: ANTHROPIC_API_KEY environment variable to be set."
-
+            "Generate natural-language AI summaries for each event (Req #9). "
+            "Requires: ANTHROPIC_API_KEY environment variable to be set. "
             "Example: export ANTHROPIC_API_KEY=sk-ant-..."
         )
     )
