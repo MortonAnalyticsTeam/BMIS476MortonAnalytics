@@ -48,7 +48,7 @@ PERFORMANCE NOTES (for 8M+ row datasets):
   - All intermediate exports write in streaming chunks
 
 DEPENDENCIES:
-  pip install pandas anthropic pyais tqdm
+  pip install pandas anthropic pyais
   (pyais only required for NMEA input files)
 
 USAGE:
@@ -90,7 +90,6 @@ USAGE:
 import os
 import sys
 import json
-import math
 import uuid
 import time
 import argparse
@@ -104,7 +103,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # ── Third-party imports ───────────────────────────────────────────────────────
 import pandas as pd
-import numpy as np
 try:
     import anthropic
 except ImportError:
@@ -144,11 +142,6 @@ CONFIG = {
     # between consecutive rows for the same vessel = ROUTE_DEVIATION.
     "deviation_bearing_threshold": 45.0,
 
-    # ── Proximity detection ───────────────────────────────────────────────────
-    # Two vessels within this many nautical miles at the same time = PROXIMITY.
-    # Reduce this for busier ports (more events); increase for open-sea analysis.
-    "proximity_nm": 0.5,
-
     # ── Large dataset performance ─────────────────────────────────────────────
     # Number of rows to read at a time when loading large CSV files.
     # Increase for faster load (uses more RAM), decrease if memory is limited.
@@ -170,8 +163,74 @@ CONFIG = {
     "col_time": ["BaseDateTime", "Timestamp", "timestamp", "TIME", "time", "DATETIME"],
     "col_sog":  ["SOG", "sog", "Speed", "speed", "SPEED"],
     "col_cog":  ["COG", "cog", "Course", "course", "COURSE"],
-    "col_name": ["VesselName", "vessel_name", "Name", "name", "VESSEL_NAME"],
+    "col_name":   ["VesselName", "vessel_name", "Name", "name", "VESSEL_NAME"],
+    "col_dest":   ["Destination", "destination", "DESTINATION", "dest", "Dest"],
+    "col_eta":    ["ETA", "eta", "EstimatedArrival", "estimated_arrival"],
+    "col_status": ["Status", "status", "NavStatus", "nav_status"],
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MARITIME REGION LOOKUP TABLE
+# Used by get_region_name() to convert lat/lon into a human-readable location.
+# Ordered most-specific first so inner bays resolve before their parent ocean.
+# Each entry: (region_name, lat_min, lat_max, lon_min, lon_max)
+# ──────────────────────────────────────────────────────────────────────────────
+MARITIME_REGIONS = [
+    # ── US East Coast ports & bays ────────────────────────────────────────────
+    ("Boston Harbor",                    42.20, 42.45, -71.10, -70.85),
+    ("Long Island Sound",                40.80, 41.60, -74.00, -71.80),
+    ("Port of New York/New Jersey",      40.40, 40.80, -74.30, -73.70),
+    ("Delaware Bay",                     38.50, 40.00, -75.70, -74.80),
+    ("Chesapeake Bay",                   36.80, 39.60, -76.60, -75.40),
+    ("Port of Charleston",               32.65, 32.90, -80.05, -79.85),
+    ("Port of Savannah",                 31.90, 32.20, -81.30, -80.80),
+    ("Port of Jacksonville",             30.20, 30.50, -81.75, -81.40),
+    ("Port of Miami",                    25.70, 25.90, -80.25, -80.05),
+    ("Tampa Bay",                        27.40, 28.20, -83.00, -82.30),
+    # ── US Gulf Coast ─────────────────────────────────────────────────────────
+    ("Port of New Orleans",              29.80, 30.20, -90.50, -89.80),
+    ("Mississippi River Delta",          28.50, 30.00, -91.50, -88.80),
+    ("Mobile Bay",                       30.00, 30.80, -88.30, -87.80),
+    ("Port of Houston / Galveston Bay",  29.20, 29.90, -95.20, -94.50),
+    ("Port of Corpus Christi",           27.70, 28.00, -97.50, -97.10),
+    # ── US West Coast ports ───────────────────────────────────────────────────
+    ("Port of Los Angeles / Long Beach", 33.50, 34.10, -118.55, -117.90),
+    ("San Francisco Bay",                37.30, 38.20, -122.70, -122.10),
+    ("Port of Portland, OR",             45.40, 45.70, -122.90, -122.60),
+    ("Puget Sound",                      47.00, 48.60, -123.00, -122.00),
+    ("Strait of Juan de Fuca",           48.00, 48.70, -124.70, -122.50),
+    # ── Alaska ────────────────────────────────────────────────────────────────
+    ("Prince William Sound",             59.50, 61.50, -148.50, -145.50),
+    ("Gulf of Alaska",                   54.00, 62.00, -162.00, -135.00),
+    # ── US coastal waters ─────────────────────────────────────────────────────
+    ("Gulf of Mexico",                   18.00, 31.00,  -98.00,  -80.00),
+    ("Caribbean Sea",                     8.00, 23.50,  -87.00,  -59.00),
+    ("US East Coast (offshore)",         25.00, 47.00,  -80.00,  -65.00),
+    ("US West Coast (offshore)",         32.00, 50.00, -130.00, -117.00),
+    # ── Major world maritime zones ────────────────────────────────────────────
+    ("English Channel",                  49.00, 52.00,   -5.50,   3.00),
+    ("North Sea",                        51.00, 62.00,   -5.00,  12.00),
+    ("Baltic Sea",                       53.00, 66.00,    9.00,  31.00),
+    ("Mediterranean Sea",                30.00, 46.00,   -6.00,  42.00),
+    ("Black Sea",                        40.50, 47.00,   27.50,  42.00),
+    ("Red Sea",                          12.00, 30.50,   32.00,  45.00),
+    ("Persian Gulf",                     22.50, 30.50,   47.50,  57.00),
+    ("Arabian Sea",                       4.00, 25.50,   55.00,  80.00),
+    ("Bay of Bengal",                     4.00, 23.00,   80.00, 100.00),
+    ("Strait of Malacca",                 1.00,  6.00,   99.00, 104.50),
+    ("South China Sea",                   0.00, 23.00,  100.00, 122.00),
+    ("East China Sea",                   22.00, 34.00,  117.00, 132.00),
+    ("Sea of Japan",                     33.00, 45.00,  128.00, 142.00),
+    ("Yellow Sea",                       31.00, 41.00,  118.00, 127.00),
+    # ── Ocean basin fallbacks ─────────────────────────────────────────────────
+    ("North Atlantic Ocean",              0.00, 70.00,  -80.00,   0.00),
+    ("South Atlantic Ocean",            -70.00,  0.00,  -65.00,  20.00),
+    ("North Pacific Ocean",               0.00, 66.00, -180.00, -100.00),
+    ("South Pacific Ocean",             -70.00,  0.00, -180.00,  -65.00),
+    ("Indian Ocean",                    -70.00, 25.00,   20.00, 150.00),
+    ("Southern Ocean",                  -90.00,-60.00, -180.00, 180.00),
+    ("Arctic Ocean",                     66.00, 90.00, -180.00, 180.00),
+]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Section 1B  DATA IMPORT FUNCTION  — Paste this after the CONFIG block
@@ -190,10 +249,11 @@ def import_dataset(preview_rows: int = 10,
     """
     Opens a file browser dialog so you can select your AIS dataset directly
     from your computer. The full dataset is loaded into memory but is NOT
-    saved into your project folder — keeping your GitHub repo lightweight.
+    saved into your project folder. The folder will be too large if it exports the dataset with 
+    the function. You can easily change this if needed. 
 
     A small preview CSV (default: 10 rows) is optionally saved so you have
-    a reference sample to inspect or commit to GitHub if needed.
+    a reference sample to inspect or commit.
 
     Supports: .csv, .json, .nmea, .txt, .ais
 
@@ -271,7 +331,7 @@ def import_dataset(preview_rows: int = 10,
 
     print(f"\n[IMPORT] Full dataset ({df.shape[0]:,} rows) is loaded in memory only.")
     print(f"         It will NOT be written to your project folder.")
-    print(f"         ✓ Your GitHub repo stays clean.\n")
+    print(f"         ✓ Your repository stays clean.\n")
 
     return df
 
@@ -323,6 +383,18 @@ def run_pipeline_from_df(df: pd.DataFrame,
     # -- Date filter: choose all rows or specific day(s) before processing
     df, date_label = prompt_date_filter(df, cols["time"])
 
+    # -- Sort and deduplicate so every vessel's track is in chronological order
+    # and duplicate pings (same vessel, same timestamp) are collapsed to one row
+    print_section("PREPROCESSING")
+    df[cols["time"]] = pd.to_datetime(df[cols["time"]], errors="coerce")
+    df = df.sort_values([cols["mmsi"], cols["time"]]).reset_index(drop=True)
+    before = len(df)
+    df = df.drop_duplicates(keep="first")  # only removes rows identical across every column
+    removed = before - len(df)
+    if removed:
+        print(f"[PREP] Removed {removed:,} duplicate vessel/timestamp rows.")
+    print(f"[PREP] {len(df):,} clean rows ready for processing.")
+
     # Run event detection
     events_df = detect_events(df, cols)
 
@@ -334,16 +406,23 @@ def run_pipeline_from_df(df: pd.DataFrame,
     labeled_df = build_labeled_dataset(df, events_df, cols)
 
     # Export outputs -- date label in filename prevents overwriting previous runs
-    print_section("EXPORTING OUTPUTS  (Req #6, #8)")
+    print_section("EXPORTING OUTPUTS")
     os.makedirs(output_dir, exist_ok=True)
 
     file_prefix = date_label if date_label != "all" else "full_dataset"
-    labeled_path = os.path.join(output_dir, file_prefix + "_labeled.csv")
-    export_csv(labeled_df, labeled_path, label="Full labeled dataset")
 
+    # Output 1: Event rows only (rows where an event was detected — compact)
+    events_only = labeled_df[labeled_df["event_type"].notna()].copy()
+    labeled_path = os.path.join(output_dir, file_prefix + "_events_labeled.csv")
+    export_csv(events_only, labeled_path, label="Event-labeled rows")
+
+    # Output 2: Events summary (one row per event)
     if events_df is not None and not events_df.empty:
         events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
         export_csv(events_df, events_path, label="Events summary")
+
+    # Output 3: One-row-per-vessel status table
+    export_vessel_status_table(df, events_df, output_dir, file_prefix)
 
     # Summary
     print_pipeline_summary("imported_dataset", labeled_df, events_df, output_dir)
@@ -464,44 +543,6 @@ def prompt_date_filter(df, time_col):
 # Small, reusable helper functions used throughout the pipeline.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def haversine_nm_vectorized(lat1: pd.Series, lon1: pd.Series,
-                             lat2: pd.Series, lon2: pd.Series) -> pd.Series:
-    """
-    Vectorized haversine distance calculation between two sets of lat/lon points.
-    Returns distance in nautical miles as a pandas Series.
-
-    Using vectorized numpy operations here is critical for performance —
-    a row-by-row Python loop on 8M rows would take hours; this takes seconds.
-    """
-    R = 3440.065  # Earth's radius in nautical miles
-
-    # Convert degrees to radians using numpy for speed
-    phi1 = np.radians(lat1)
-    phi2 = np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlambda = np.radians(lon2 - lon1)
-
-    # Haversine formula
-    a = (np.sin(dphi / 2) ** 2 +
-         np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2)
-
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-
-
-def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Scalar haversine distance between two lat/lon points (nautical miles).
-    Used for single-pair comparisons (e.g. proximity checks on small groups).
-    """
-    R = 3440.065
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = (math.sin(dphi / 2) ** 2 +
-         math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
 def bearing_change_vectorized(cog1: pd.Series, cog2: pd.Series) -> pd.Series:
     """
     Vectorized absolute angular difference between two bearing Series (0–180°).
@@ -532,26 +573,34 @@ def make_event_id() -> str:
     return "EVT-" + str(uuid.uuid4())[:8].upper()
 
 
-def confidence_score(event_type: str, sog_value: Optional[float] = None) -> float:
+def confidence_score(event_type: str,
+                     sog_value: Optional[float] = None,
+                     bearing_change: Optional[float] = None) -> float:
     """
     Rule-based confidence scoring (0.0 – 1.0) for a detected event.
 
-    Base scores are set by event type. Additional boost is applied when
-    the SOG signal is unusually clear (e.g. vessel is nearly stationary
-    for ANCHORING, or moving fast for DEPARTURE).
+    Base scores are set by event type, then adjusted by supporting signals:
 
-    This is a heuristic model — for production, consider training a
-    classifier on labeled ground-truth AIS data for higher accuracy.
+    ROUTE_DEVIATION scoring factors:
+      - Bearing change magnitude  : larger turns are harder to explain as noise
+          45–60°  → base 0.70
+          60–90°  → +0.08  (moderate turn)
+          90–135° → +0.13  (sharp turn)
+          >135°   → +0.17  (near-reversal — very strong signal)
+      - Speed at time of turn:
+          > 5 kts  → +0.05  (vessel clearly underway, not drifting)
+          < 1.5 kts → -0.10 (slow maneuvering in port; may not be a true deviation)
+
+    Other event types use SOG as the primary signal (arrival/departure/anchoring).
 
     Args:
-        event_type : One of ARRIVAL, DEPARTURE, ANCHORING,
-                     ROUTE_DEVIATION, PROXIMITY
-        sog_value  : Speed Over Ground at time of event (optional boost)
+        event_type     : ARRIVAL, DEPARTURE, ANCHORING, ROUTE_DEVIATION, PROXIMITY
+        sog_value      : Speed Over Ground at time of event (knots)
+        bearing_change : Absolute bearing change in degrees (ROUTE_DEVIATION only)
 
     Returns:
         float between 0.0 and 1.0
     """
-    # Base confidence by event type (tuned from domain knowledge)
     base = {
         "ARRIVAL":         0.80,
         "DEPARTURE":       0.78,
@@ -560,26 +609,31 @@ def confidence_score(event_type: str, sog_value: Optional[float] = None) -> floa
         "PROXIMITY":       0.75,
     }.get(event_type, 0.60)
 
-    # Boost confidence when SOG makes the event very clear
-    if sog_value is not None and not pd.isna(sog_value):
-        if event_type in ("ARRIVAL", "ANCHORING") and sog_value < 0.2:
-            base = min(base + 0.10, 1.0)   # Near-zero speed = strong signal
-        elif event_type == "DEPARTURE" and sog_value > 5.0:
-            base = min(base + 0.08, 1.0)   # High speed = clearly underway
+    if event_type == "ROUTE_DEVIATION":
+        # Adjust for how sharp the turn was
+        if bearing_change is not None and not pd.isna(bearing_change):
+            if bearing_change > 135:
+                base = min(base + 0.17, 1.0)
+            elif bearing_change > 90:
+                base = min(base + 0.13, 1.0)
+            elif bearing_change > 60:
+                base = min(base + 0.08, 1.0)
+            # 45–60° range: no adjustment — that's the detection threshold itself
+        # Adjust for speed (slow = could just be port maneuvering)
+        if sog_value is not None and not pd.isna(sog_value):
+            if sog_value > 5.0:
+                base = min(base + 0.05, 1.0)
+            elif sog_value < 1.5:
+                base = max(base - 0.10, 0.0)
+    else:
+        # Boost confidence when SOG makes other event types very clear
+        if sog_value is not None and not pd.isna(sog_value):
+            if event_type in ("ARRIVAL", "ANCHORING") and sog_value < 0.2:
+                base = min(base + 0.10, 1.0)
+            elif event_type == "DEPARTURE" and sog_value > 5.0:
+                base = min(base + 0.08, 1.0)
 
     return round(base, 2)
-
-
-def null_flags(row: pd.Series, key_cols: list) -> str:
-    """
-    Check for NULL/NaN values in a row's key columns (Req #3).
-    Returns a comma-separated string of column names that are null,
-    or 'None' if all key fields are present.
-
-    This satisfies Req #3's requirement to report any NULLs in event output.
-    """
-    nulls = [c for c in key_cols if c and pd.isna(row.get(c, None))]
-    return ", ".join(nulls) if nulls else "None"
 
 
 def print_section(title: str):
@@ -589,8 +643,353 @@ def print_section(title: str):
     print(f"{'─' * 60}")
 
 
+def get_region_name(lat: float, lon: float) -> str:
+    """
+    Return a human-readable maritime region name for a lat/lon coordinate.
+    Uses the MARITIME_REGIONS priority list (most specific first).
+    Falls back to a cardinal open-ocean description if no region matches.
+    """
+    if pd.isna(lat) or pd.isna(lon):
+        return "Unknown Location"
+    for name, lat_min, lat_max, lon_min, lon_max in MARITIME_REGIONS:
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            return name
+    hemi_lat = "N" if lat >= 0 else "S"
+    hemi_lon = "E" if lon >= 0 else "W"
+    return f"Open Ocean ({abs(lat):.1f}°{hemi_lat}, {abs(lon):.1f}°{hemi_lon})"
+
+
+def describe_vessel_status(sog: Optional[float],
+                            cog: Optional[float] = None) -> str:
+    """Return a plain-English description of a vessel's current activity."""
+    if sog is None or pd.isna(sog):
+        return "Status unknown (speed data unavailable)"
+    cog_str = f", heading {cog:.0f}°" if cog is not None and not pd.isna(cog) else ""
+    if sog < 0.3:
+        return f"Stopped / at anchor (SOG {sog:.1f} kts)"
+    elif sog < 1.5:
+        return f"Maneuvering slowly (SOG {sog:.1f} kts{cog_str})"
+    elif sog < 5.0:
+        return f"Moving at low speed (SOG {sog:.1f} kts{cog_str})"
+    elif sog < 15.0:
+        return f"Underway (SOG {sog:.1f} kts{cog_str})"
+    else:
+        return f"Underway at high speed (SOG {sog:.1f} kts{cog_str})"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 3: DATA LOADERS  (Req #10 — CSV, JSON, NMEA compatibility)
+# SECTION 2B: VESSEL LOOKUP
+# Call lookup_vessel(labeled_df, events_df, <MMSI or name>) after running the
+# pipeline to get a plain-English status report for any specific vessel.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def lookup_vessel(df: pd.DataFrame,
+                  events_df: pd.DataFrame,
+                  identifier,
+                  print_report: bool = True) -> str:
+    """
+    Look up a vessel by MMSI or name and print a plain-English status report.
+
+    Shows:
+      - Last known position with named region
+      - Current speed / activity description
+      - Destination and ETA (if present in the dataset)
+      - All detected events for this vessel with location and description
+
+    Args:
+        df           : The labeled (or raw) AIS DataFrame
+        events_df    : Events summary DataFrame from the pipeline
+        identifier   : MMSI number (int/str) OR vessel name (partial match OK)
+        print_report : Print to console (default True); always returns the string
+
+    Usage:
+        lookup_vessel(labeled_df, events_df, 123456789)
+        lookup_vessel(labeled_df, events_df, "EVER GIVEN")
+    """
+    cols     = resolve_columns(df)
+    col_mmsi = cols["mmsi"]
+    col_time = cols["time"]
+    col_lat  = cols["lat"]
+    col_lon  = cols["lon"]
+    col_sog  = cols.get("sog")
+    col_cog  = cols.get("cog")
+    col_name = cols.get("name")
+
+    # Optional AIS fields that are present in some (not all) datasets
+    col_dest   = resolve_column(df, CONFIG["col_dest"])
+    col_eta    = resolve_column(df, CONFIG["col_eta"])
+    col_status = resolve_column(df, CONFIG["col_status"])
+
+    ident_str = str(identifier).strip()
+
+    # Try exact MMSI match first, then case-insensitive partial name match
+    mask = df[col_mmsi].astype(str) == ident_str
+    if not mask.any() and col_name:
+        mask = df[col_name].astype(str).str.upper().str.contains(
+            ident_str.upper(), na=False, regex=False
+        )
+
+    if not mask.any():
+        msg = f"[LOOKUP] No vessel found matching '{identifier}'\n"
+        if print_report:
+            print(msg)
+        return msg
+
+    vessel_rows          = df[mask].copy()
+    vessel_rows[col_time] = pd.to_datetime(vessel_rows[col_time], errors="coerce")
+    latest               = vessel_rows.sort_values(col_time).iloc[-1]
+
+    # ── Core fields ───────────────────────────────────────────────────────────
+    v_name = (str(latest[col_name])
+              if col_name and not pd.isna(latest.get(col_name, float("nan")))
+              else "Unknown")
+    mmsi   = str(latest[col_mmsi])
+    ts     = str(latest[col_time])
+    lat    = float(latest[col_lat])
+    lon    = float(latest[col_lon])
+    region = get_region_name(lat, lon)
+
+    sog = (float(latest[col_sog])
+           if col_sog and not pd.isna(latest.get(col_sog, float("nan"))) else None)
+    cog = (float(latest[col_cog])
+           if col_cog and not pd.isna(latest.get(col_cog, float("nan"))) else None)
+    activity = describe_vessel_status(sog, cog)
+
+    # ── Optional AIS fields ───────────────────────────────────────────────────
+    destination = (str(latest[col_dest])
+                   if col_dest and not pd.isna(latest.get(col_dest, float("nan"))) else None)
+    eta         = (str(latest[col_eta])
+                   if col_eta and not pd.isna(latest.get(col_eta, float("nan"))) else None)
+    nav_status  = (str(latest[col_status])
+                   if col_status and not pd.isna(latest.get(col_status, float("nan"))) else None)
+
+    # ── Detected events for this vessel ──────────────────────────────────────
+    vessel_events = []
+    if events_df is not None and not events_df.empty:
+        ev_mask = events_df["vessel_id"].astype(str).str.contains(
+            mmsi, na=False, regex=False
+        )
+        if ev_mask.any():
+            vessel_events = (events_df[ev_mask]
+                             .sort_values("timestamp", ascending=False)
+                             .head(10)
+                             .to_dict("records"))
+
+    # ── Format the report ─────────────────────────────────────────────────────
+    sep = "=" * 55
+    lines = [
+        sep,
+        "  VESSEL STATUS REPORT",
+        sep,
+        f"  Name        : {v_name}",
+        f"  MMSI        : {mmsi}",
+        f"  Last seen   : {ts}",
+        f"  Location    : {region}",
+        f"                Lat {lat:.4f}, Lon {lon:.4f}",
+        f"  Activity    : {activity}",
+    ]
+    if nav_status:
+        lines.append(f"  AIS Status  : {nav_status}")
+    if destination:
+        lines.append(f"  Destination : {destination}")
+    if eta:
+        lines.append(f"  ETA         : {eta}")
+
+    lines.append(f"\n  Detected Events ({len(vessel_events)} most recent):")
+    if vessel_events:
+        for ev in vessel_events:
+            ev_lat    = float(ev.get("latitude", 0))
+            ev_lon    = float(ev.get("longitude", 0))
+            ev_region = get_region_name(ev_lat, ev_lon)
+            ev_label  = ev.get("event_label") or ev.get("event_type", "EVENT")
+            ev_ts     = str(ev.get("timestamp", ""))
+            ev_conf   = ev.get("confidence_score", "")
+            lines += [
+                f"",
+                f"    [{ev_ts}]",
+                f"      What    : {ev_label}",
+                f"      Where   : {ev_region}  (Lat {ev_lat:.4f}, Lon {ev_lon:.4f})",
+                f"      Conf.   : {ev_conf}",
+            ]
+    else:
+        lines.append("    None detected for this vessel.")
+
+    lines.append(sep)
+
+    report = "\n".join(lines)
+    if print_report:
+        print(report)
+    return report
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTION 2C: BULK VESSEL STATUS EXPORT
+# Produces a one-row-per-vessel CSV — fast on 8M+ rows via groupby().last().
+# ──────────────────────────────────────────────────────────────────────────────
+
+def export_vessel_status_table(df: pd.DataFrame,
+                                events_df,
+                                output_dir: str,
+                                file_prefix: str) -> pd.DataFrame:
+    """
+    Build and export a one-row-per-vessel status table.
+
+    Columns: MMSI, vessel_name, last_seen, region_name, lat, lon,
+             activity, event_count  (+ destination/eta if in data)
+
+    Uses sort + groupby().last() — single pass, ~10–30 s on 8M rows.
+    The apply() calls for region/activity run only on the small per-vessel
+    table (hundreds to thousands of rows), not the full dataset.
+
+    Args:
+        df          : Full AIS DataFrame (raw or labeled)
+        events_df   : Events summary DataFrame from the pipeline (may be None)
+        output_dir  : Directory where the CSV will be saved
+        file_prefix : Filename prefix (e.g. "2023-06-15" or "full_dataset")
+
+    Returns:
+        status DataFrame (also exported to CSV)
+    """
+    print("[STATUS TABLE] Building per-vessel status table...")
+
+    cols     = resolve_columns(df)
+    col_mmsi = cols["mmsi"]
+    col_time = cols["time"]
+    col_lat  = cols["lat"]
+    col_lon  = cols["lon"]
+    col_sog  = cols.get("sog")
+    col_cog  = cols.get("cog")
+    col_name = cols.get("name")
+    col_dest = resolve_column(df, CONFIG["col_dest"])
+    col_eta  = resolve_column(df, CONFIG["col_eta"])
+
+    # Sort by time (detect_events already parsed timestamps in-place)
+    # Only bring along columns we need before sorting to save memory
+    keep = [col_mmsi, col_time, col_lat, col_lon]
+    for c in [col_sog, col_cog, col_name, col_dest, col_eta]:
+        if c and c in df.columns and c not in keep:
+            keep.append(c)
+
+    status = (df[keep]
+              .sort_values(col_time)
+              .groupby(col_mmsi, sort=False)
+              .last()
+              .reset_index())
+
+    # Rename to clean standard names
+    rename = {col_mmsi: "MMSI", col_time: "last_seen",
+              col_lat: "lat", col_lon: "lon"}
+    if col_sog:
+        rename[col_sog] = "_sog"
+    if col_cog:
+        rename[col_cog] = "_cog"
+    if col_name:
+        rename[col_name] = "vessel_name"
+    if col_dest:
+        rename[col_dest] = "destination"
+    if col_eta:
+        rename[col_eta] = "eta"
+    status = status.rename(columns=rename)
+
+    # Fill missing vessel_name with MMSI string
+    if "vessel_name" not in status.columns:
+        status["vessel_name"] = status["MMSI"].astype(str)
+    else:
+        status["vessel_name"] = (
+            status["vessel_name"]
+            .astype(str)
+            .replace("nan", pd.NA)
+            .fillna(status["MMSI"].astype(str))
+        )
+
+    # Region name — runs on the small per-vessel table, not 8M rows
+    status["region_name"] = status.apply(
+        lambda r: get_region_name(float(r["lat"]), float(r["lon"])), axis=1
+    )
+
+    # Activity description
+    status["activity"] = status.apply(
+        lambda r: describe_vessel_status(
+            float(r["_sog"]) if "_sog" in r and pd.notna(r["_sog"]) else None,
+            float(r["_cog"]) if "_cog" in r and pd.notna(r["_cog"]) else None,
+        ),
+        axis=1,
+    )
+
+    # AIS ping count per vessel (how many position reports we received for each ship)
+    ping_counts = df[col_mmsi].value_counts().rename("ping_count")
+    status["ping_count"] = status["MMSI"].map(ping_counts).fillna(0).astype(int)
+
+    # Event counts per vessel
+    if events_df is not None and not events_df.empty:
+        event_counts = (events_df["vessel_id"]
+                        .astype(str)
+                        .value_counts()
+                        .rename("event_count"))
+        status["_mmsi_str"] = status["MMSI"].astype(str)
+        status = status.join(event_counts, on="_mmsi_str").drop(columns="_mmsi_str")
+
+        # Route deviation count and average confidence per vessel
+        dev_events = events_df[events_df["event_type"] == "ROUTE_DEVIATION"].copy()
+        dev_events["_mmsi_str"] = dev_events["vessel_id"].astype(str)
+
+        dev_counts = (dev_events.groupby("_mmsi_str")["vessel_id"]
+                      .count().rename("deviation_count"))
+        dev_conf   = (dev_events.groupby("_mmsi_str")["confidence_score"]
+                      .mean().rename("_avg_dev_conf"))
+
+        status["_mmsi_str"] = status["MMSI"].astype(str)
+        status = (status
+                  .join(dev_counts, on="_mmsi_str")
+                  .join(dev_conf,   on="_mmsi_str")
+                  .drop(columns="_mmsi_str"))
+    else:
+        status["event_count"]    = 0
+        status["deviation_count"] = 0
+        status["_avg_dev_conf"]  = float("nan")
+
+    status["event_count"]    = status["event_count"].fillna(0).astype(int)
+    status["deviation_count"] = status["deviation_count"].fillna(0).astype(int)
+
+    # Human-readable confidence label for deviations
+    def _conf_label(row):
+        if row["deviation_count"] == 0:
+            return "N/A"
+        score = row["_avg_dev_conf"]
+        if pd.isna(score):
+            return "N/A"
+        if score >= 0.88:
+            label = "High"
+        elif score >= 0.75:
+            label = "Medium"
+        else:
+            label = "Low"
+        return f"{label} ({score:.2f})"
+
+    status["deviation_confidence"] = status.apply(_conf_label, axis=1)
+    status = status.drop(columns=["_avg_dev_conf"])
+
+    # Drop internal helper columns and set final column order
+    status = status.drop(columns=[c for c in ["_sog", "_cog"] if c in status.columns])
+    output_cols = ["MMSI", "vessel_name", "ping_count", "last_seen", "region_name",
+                   "lat", "lon", "activity", "deviation_count",
+                   "deviation_confidence", "event_count"]
+    for opt in ["destination", "eta"]:
+        if opt in status.columns:
+            output_cols.append(opt)
+    status = status[[c for c in output_cols if c in status.columns]]
+
+    # Export
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, file_prefix + "_vessel_status.csv")
+    status.to_csv(out_path, index=False)
+    print(f"[STATUS TABLE] {len(status):,} vessels → {out_path}")
+
+    return status
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTION 3: DATA LOADERS
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_csv(filepath: str) -> pd.DataFrame:
@@ -646,7 +1045,7 @@ def load_json(filepath: str) -> pd.DataFrame:
             data = json.load(f)
         df = pd.DataFrame(data) if isinstance(data, list) else pd.json_normalize(data)
     except json.JSONDecodeError:
-        # Fall back to newline-delimited JSON (common in streaming AIS feeds)
+        # Fall back to newline-delimited JSON
         print("[LOAD] Standard JSON parse failed — trying newline-delimited JSON...")
         df = pd.read_json(filepath, lines=True)
 
@@ -780,7 +1179,7 @@ def resolve_columns(df: pd.DataFrame) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 5: EVENT DETECTION ENGINE  (Req #1, #2, #4, #5)
+# SECTION 5: EVENT DETECTION ENGINE
 # Core AI/rule-based logic for identifying vessel events.
 # All operations are vectorized for performance on large datasets.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -806,7 +1205,7 @@ def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
         pd.DataFrame with columns: event_id, vessel_id, vessel_name,
         event_type, timestamp, latitude, longitude, confidence_score, null_flags
     """
-    print_section("EVENT DETECTION  (Req #1, #2, #4, #5)")
+    print_section("EVENT DETECTION")
 
     # Unpack column name references from the resolved mapping
     col_mmsi = cols["mmsi"]
@@ -844,17 +1243,17 @@ def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
     else:
         print("[DETECT] WARNING: COG column not found — skipping route deviation detection.")
 
-    # ── Step 4: Cross-vessel events (PROXIMITY) ───────────────────────────────
-    # This is the most computationally expensive — uses time-bucketed grouping
-    print("[DETECT] Running proximity detection (cross-vessel)...")
-    all_events += _detect_proximity(df, cols)
-
     print(f"\n[DETECT] Detection complete — {len(all_events):,} total events found.")
 
     if not all_events:
         return pd.DataFrame()
 
-    return pd.DataFrame(all_events)
+    events_df = pd.DataFrame(all_events)
+    # Add human-readable region name to every event
+    events_df["region_name"] = events_df.apply(
+        lambda r: get_region_name(r["latitude"], r["longitude"]), axis=1
+    )
+    return events_df
 
 
 def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
@@ -997,7 +1396,7 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
     matched = df[deviation_mask]
 
     # Extract matched rows as arrays — avoids slow iterrows() over large deviation sets
-    dev_cols = [col_mmsi, col_lat, col_lon, col_time, col_cog]
+    dev_cols = [col_mmsi, col_lat, col_lon, col_time, col_cog, "_bearing_change", "_prev_cog"]
     if col_sog:
         dev_cols.append(col_sog)
     if col_name:
@@ -1005,30 +1404,49 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
     matched_sub = matched[dev_cols]
     n_dev = len(matched_sub)
 
-    mmsi_arr = matched_sub[col_mmsi].to_numpy()
-    lat_arr  = matched_sub[col_lat].to_numpy()
-    lon_arr  = matched_sub[col_lon].to_numpy()
-    time_arr = matched_sub[col_time].to_numpy()
-    sog_arr  = matched_sub[col_sog].to_numpy() if col_sog else None
-    name_arr = matched_sub[col_name].to_numpy() if col_name else None
+    mmsi_arr     = matched_sub[col_mmsi].to_numpy()
+    lat_arr      = matched_sub[col_lat].to_numpy()
+    lon_arr      = matched_sub[col_lon].to_numpy()
+    time_arr     = matched_sub[col_time].to_numpy()
+    cog_arr      = matched_sub[col_cog].to_numpy()
+    bearing_arr  = matched_sub["_bearing_change"].to_numpy()
+    prev_cog_arr = matched_sub["_prev_cog"].to_numpy()
+    sog_arr      = matched_sub[col_sog].to_numpy() if col_sog else None
+    name_arr     = matched_sub[col_name].to_numpy() if col_name else None
 
     null_check_cols = [col_lat, col_lon, col_time, col_cog]
     null_matrix = pd.isna(matched_sub[null_check_cols]).to_numpy()
 
     for k in range(n_dev):
-        sog_raw = sog_arr[k] if sog_arr is not None else None
-        sog_val = float(sog_raw) if sog_raw is not None and not pd.isna(sog_raw) else None
-        nulls   = [c for c, bad in zip(null_check_cols, null_matrix[k]) if bad]
+        sog_raw  = sog_arr[k] if sog_arr is not None else None
+        sog_val  = float(sog_raw) if sog_raw is not None and not pd.isna(sog_raw) else None
+        nulls    = [c for c, bad in zip(null_check_cols, null_matrix[k]) if bad]
+
+        # Build a specific label describing what the vessel did in this turn
+        b_deg    = float(bearing_arr[k]) if not pd.isna(bearing_arr[k]) else 0.0
+        curr_cog = float(cog_arr[k])      if not pd.isna(cog_arr[k])    else None
+        prev_cog = float(prev_cog_arr[k]) if not pd.isna(prev_cog_arr[k]) else None
+        if curr_cog is not None and prev_cog is not None:
+            delta     = (curr_cog - prev_cog + 360) % 360
+            direction = "starboard" if delta <= 180 else "port"
+            cog_str   = f" (COG {prev_cog:.0f}°→{curr_cog:.0f}°)"
+        else:
+            direction = "unknown direction"
+            cog_str   = ""
+        sog_str     = f" at {sog_val:.1f} kts" if sog_val is not None else ""
+        event_label = f"Turned {b_deg:.0f}° to {direction}{cog_str}{sog_str}"
+
         events.append({
             "event_id":         make_event_id(),
             "vessel_id":        mmsi_arr[k],
             "vessel_name":      (name_arr[k] if col_name and not pd.isna(name_arr[k])
                                  else str(mmsi_arr[k])),
             "event_type":       "ROUTE_DEVIATION",
+            "event_label":      event_label,
             "timestamp":        time_arr[k],
             "latitude":         float(lat_arr[k]),
             "longitude":        float(lon_arr[k]),
-            "confidence_score": confidence_score("ROUTE_DEVIATION", sog_val),
+            "confidence_score": confidence_score("ROUTE_DEVIATION", sog_val, b_deg),
             "null_flags":       ", ".join(nulls) if nulls else "None",
         })
 
@@ -1039,107 +1457,8 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
     return events
 
 
-def _detect_proximity(df: pd.DataFrame, cols: dict) -> list:
-    """
-    Detect PROXIMITY events: two different vessels within proximity_nm
-    nautical miles of each other at (approximately) the same time.
-
-    Strategy for scalability on 8M rows:
-    - Round timestamps to the nearest minute to create time buckets
-    - Only compare vessels within the same time bucket
-    - Skip buckets with fewer than 2 vessels (no possible proximity pair)
-    - This avoids O(n²) comparisons across the full dataset
-
-    For extremely dense datasets (many vessels per time bucket), consider
-    adding a spatial grid filter (e.g. round lat/lon to 0.1° cells) to
-    further reduce comparisons.
-    """
-    col_mmsi = cols["mmsi"]
-    col_lat  = cols["lat"]
-    col_lon  = cols["lon"]
-    col_time = cols["time"]
-
-    events = []
-    prox_nm = CONFIG["proximity_nm"]
-
-    # Bucket rows by minute — reduces comparison space enormously
-    df["_ts_bucket"] = pd.to_datetime(df[col_time], errors="coerce").dt.floor("min")
-
-    # Get only one position per vessel per time bucket (most recent)
-    # This avoids redundant pair checks within a single vessel's track
-    snapshot = (df.groupby([col_mmsi, "_ts_bucket"])
-                  .agg({col_lat: "last", col_lon: "last"})
-                  .reset_index())
-
-    # Group by time bucket and compare all vessel pairs within that bucket
-    total_buckets = snapshot["_ts_bucket"].nunique()
-    checked = 0
-
-    for ts_bucket, group in snapshot.groupby("_ts_bucket"):
-        checked += 1
-        if checked % 10000 == 0:
-            print(f"         Proximity scan: {checked:,}/{total_buckets:,} time buckets...", end="\r")
-
-        # Need at least 2 vessels to form a pair
-        if len(group) < 2:
-            continue
-
-        vessels = group.reset_index(drop=True)
-
-        lats   = vessels[col_lat].to_numpy(dtype="float64")
-        lons   = vessels[col_lon].to_numpy(dtype="float64")
-        mmsi_v = vessels[col_mmsi].to_numpy()
-
-        # Drop rows with invalid coordinates
-        valid  = ~(np.isnan(lats) | np.isnan(lons))
-        lats   = lats[valid]
-        lons   = lons[valid]
-        mmsi_v = mmsi_v[valid]
-        n_v    = len(lats)
-        if n_v < 2:
-            continue
-
-        # Vectorized pairwise haversine via numpy broadcasting.
-        # Replaces the O(n²) Python loop — for 100 vessels this is ~100x faster.
-        # Memory: n×n float64 matrix ≈ 8 KB per vessel² (fine up to ~5000 vessels/bucket).
-        R       = 3440.065
-        phi1    = np.radians(lats[:, None])
-        phi2    = np.radians(lats[None, :])
-        dphi    = np.radians(lats[None, :] - lats[:, None])
-        dlambda = np.radians(lons[None, :] - lons[:, None])
-        a       = (np.sin(dphi / 2) ** 2
-                   + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2)
-        dists   = R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-
-        # Get upper-triangle pairs within proximity threshold (each pair once)
-        i_idx, j_idx = np.where(np.triu(dists <= prox_nm, k=1))
-
-        for i, j in zip(i_idx, j_idx):
-            if mmsi_v[i] == mmsi_v[j]:
-                continue
-            mid_lat = (lats[i] + lats[j]) / 2
-            mid_lon = (lons[i] + lons[j]) / 2
-            events.append({
-                "event_id":         make_event_id(),
-                "vessel_id":        f"{mmsi_v[i]} & {mmsi_v[j]}",
-                "vessel_name":      "PROXIMITY PAIR",
-                "event_type":       "PROXIMITY",
-                "timestamp":        ts_bucket,
-                "latitude":         mid_lat,
-                "longitude":        mid_lon,
-                "confidence_score": confidence_score("PROXIMITY"),
-                "null_flags":       "None",
-            })
-
-    print(f"\n         {'PROXIMITY':<20} → {len(events):,} events detected")
-
-    # Clean up temporary column
-    df.drop(columns=["_ts_bucket"], inplace=True, errors="ignore")
-    return events
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 6: AI NATURAL LANGUAGE SUMMARIES  (Req #9)
+# SECTION 6: AI NATURAL LANGUAGE SUMMARIES
 # Uses the Claude API to generate plain-English descriptions of each event.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1163,13 +1482,10 @@ def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
     """
     print_section("AI EVENT SUMMARIES  (Req #9)")
 
-    # Import Anthropic SDK — requires: pip install anthropic
-    try:
-        import anthropic
-    except ImportError:
+    # Check that anthropic was successfully imported at module load
+    if anthropic is None:
         print("[AI] WARNING: anthropic package not installed.")
         print("     Install with: pip install anthropic")
-        print("     Skipping AI summaries — adding placeholder column.")
         events_df["ai_summary"] = "AI summary unavailable (anthropic not installed)"
         return events_df
 
@@ -1244,7 +1560,7 @@ def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 7: OUTPUT BUILDER  (Req #3, #5, #6, #8)
+# SECTION 7: OUTPUT BUILDER
 # Merges event labels back into the original DataFrame as new columns.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1295,22 +1611,8 @@ def build_labeled_dataset(original_df: pd.DataFrame,
     events_df["_key_ts"] = (pd.to_datetime(events_df["timestamp"], errors="coerce")
                              .dt.floor("min").astype(str))
 
-    # Expand PROXIMITY events (stored as "MMSI_A & MMSI_B") into two rows so
-    # both vessels get tagged — done vectorially instead of row-by-row
-    prox_mask = events_df["vessel_id"].astype(str).str.contains(" & ", na=False)
-    non_prox  = events_df[~prox_mask].copy()
-    non_prox["_key_mmsi"] = non_prox["vessel_id"].astype(str)
-
-    if prox_mask.any():
-        prox_a = events_df[prox_mask].copy()
-        prox_a["_key_mmsi"] = (prox_a["vessel_id"].astype(str)
-                                .str.split(" & ").str[0].str.strip())
-        prox_b = events_df[prox_mask].copy()
-        prox_b["_key_mmsi"] = (prox_b["vessel_id"].astype(str)
-                                .str.split(" & ").str[1].str.strip())
-        events_expanded = pd.concat([non_prox, prox_a, prox_b], ignore_index=True)
-    else:
-        events_expanded = non_prox
+    events_expanded = events_df.copy()
+    events_expanded["_key_mmsi"] = events_expanded["vessel_id"].astype(str)
 
     # Keep first event per (mmsi, ts-minute) key — mirrors original "first wins" logic
     events_expanded = events_expanded.drop_duplicates(
@@ -1318,6 +1620,10 @@ def build_labeled_dataset(original_df: pd.DataFrame,
     )
 
     merge_cols = ["event_id", "event_type", "confidence_score", "null_flags"]
+    if "event_label" in events_expanded.columns:
+        merge_cols.append("event_label")
+    if "region_name" in events_expanded.columns:
+        merge_cols.append("region_name")
     if "ai_summary" in events_expanded.columns:
         merge_cols.append("ai_summary")
 
@@ -1348,7 +1654,7 @@ def build_labeled_dataset(original_df: pd.DataFrame,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 8: CSV EXPORT  (Req #6, #8)
+# SECTION 8: CSV EXPORT
 # ──────────────────────────────────────────────────────────────────────────────
 
 def export_csv(df: pd.DataFrame, filepath: str, label: str = "output"):
@@ -1369,7 +1675,7 @@ def export_csv(df: pd.DataFrame, filepath: str, label: str = "output"):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 9: PIPELINE SUMMARY / REPORT  (Req #7 — Documentation support)
+# SECTION 9: PIPELINE SUMMARY / REPORT
 # ──────────────────────────────────────────────────────────────────────────────
 
 def print_pipeline_summary(input_path: str, labeled_df: pd.DataFrame,
@@ -1452,6 +1758,17 @@ def run_pipeline(input_path: str,
     # ── Step 2.5: Date filter ─────────────────────────────────────────────────
     df, date_label = prompt_date_filter(df, cols["time"])
 
+    # ── Step 2.6: Sort and deduplicate ────────────────────────────────────────
+    print_section("PREPROCESSING")
+    df[cols["time"]] = pd.to_datetime(df[cols["time"]], errors="coerce")
+    df = df.sort_values([cols["mmsi"], cols["time"]]).reset_index(drop=True)
+    before = len(df)
+    df = df.drop_duplicates(keep="first")  # only removes rows identical across every column
+    removed = before - len(df)
+    if removed:
+        print(f"[PREP] Removed {removed:,} duplicate vessel/timestamp rows.")
+    print(f"[PREP] {len(df):,} clean rows ready for processing.")
+
     # ── Step 3: Event detection ───────────────────────────────────────────────
     events_df = detect_events(df, cols)
 
@@ -1471,17 +1788,21 @@ def run_pipeline(input_path: str,
     base = os.path.splitext(os.path.basename(input_path))[0]
     file_prefix = (base + "_" + date_label) if date_label != "all" else base
 
-    # Output 1: Full labeled dataset (original data + new event columns)
-    labeled_path = os.path.join(output_dir, file_prefix + "_labeled.csv")
-    export_csv(labeled_df, labeled_path, label="Full labeled dataset")
+    # Output 1: Event rows only (rows where an event was detected — compact)
+    events_only = labeled_df[labeled_df["event_type"].notna()].copy()
+    labeled_path = os.path.join(output_dir, file_prefix + "_events_labeled.csv")
+    export_csv(events_only, labeled_path, label="Event-labeled rows")
 
-    # Output 2: Events-only summary (one row per event — for dashboards/analytics)
+    # Output 2: Events summary (one row per event)
     if events_df is not None and not events_df.empty:
         events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
         export_csv(events_df, events_path, label="Events summary")
     else:
         events_path = None
         print("[EXPORT] No events to export.")
+
+    # Output 3: One-row-per-vessel status table
+    export_vessel_status_table(df, events_df, output_dir, file_prefix)
 
     # ── Step 7: Summary ───────────────────────────────────────────────────────
     print_pipeline_summary(input_path, labeled_df, events_df, output_dir)
