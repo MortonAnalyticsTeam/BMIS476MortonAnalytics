@@ -1,92 +1,15 @@
 """
-For the DDT Team: READ ME
-I made a description of how to download the functions necessary for this function.
-They are viewable on line 60. You can follow the directions to get the errors out. 
-The code should run well after this. You can view a description of each system and function.
-That can be found in the Google Drive or in the README file. 
-
-================================================================================
 DDT — GEN AI DATA PROCESSING AND ANALYTICS SOLUTION
-AIS Vessel Event Detection, Labeling & AI Summary System
-================================================================================
-Project      : GEN AI DATA PROCESSING AND ANALYTICS SOLUTION
-Team         : DDT Team
-Version      : 2.0
-Description  : Full pipeline for reading, processing, detecting, labeling, and
-               summarizing AIS vessel event data at scale (8M+ rows supported).
+AIS Vessel Event Detection, Labeling & AI Summary Pipeline
+Team: DDT | Version: 2.0
 
-SYSTEM REQUIREMENTS COVERAGE:
-  Req #1  [CRITICAL] Event Labeling GenAI System
-                     → Full AI-powered detection and labeling pipeline
-  Req #2  [CRITICAL] Identify location of shipments
-                     → Lat/Lon + timestamp tracking per vessel
-  Req #3  [HIGH]     Event Data Output
-                     → Structured output: Vessel ID, Event Type, Timestamp,
-                       Location, Confidence Score, NULL flags
-  Req #4  [HIGH]     Event Detection and Labeling
-                     → Detects: ARRIVAL, DEPARTURE, ANCHORING,
-                       ROUTE_DEVIATION, PROXIMITY
-  Req #5  [HIGH]     Event Object Generation
-                     → Generates: event_id, timestamp, location,
-                       vessel(s), event_type, confidence_score
-  Req #6  [HIGH]     Data Formatted in New Rows
-                     → New columns appended to original DataFrame + CSV export
-  Req #7  [CRITICAL] Documentation
-                     → Inline comments and docstrings throughout (see below)
-  Req #8  [HIGH]     Data Labeling Output Format
-                     → Structured CSV output for downstream analytics
-  Req #9  [HIGH]     Natural Language AI Event Summary
-                     → Claude API generates plain-English summaries per event
-  Req #10 [HIGH]     System Compatibility
-                     → Reads CSV, JSON, and NMEA AIS datasets
-
-PERFORMANCE NOTES (for 8M+ row datasets):
-  - CSV loading uses chunked reading with dtype optimization
-  - Event detection uses vectorized pandas operations (no row-by-row loops)
-  - Proximity detection uses spatial blocking by time window
-  - AI summaries are batched and rate-limited to avoid API overload
-  - All intermediate exports write in streaming chunks
-
-DEPENDENCIES:
-  pip install pandas anthropic pyais
-  (pyais only required for NMEA input files)
-
-USAGE:
-  python ddt_ais_pipeline.py your_data.csv --output-dir ./output
-  python ddt_ais_pipeline.py your_data.csv --output-dir ./output --ai-summaries
-  python ddt_ais_pipeline.py your_data.json --output-dir ./output --ai-summaries
-================================================================================
+Install dependencies:
+    pip install pandas numpy anthropic pyais
+Set API key:
+    Windows : set ANTHROPIC_API_KEY=your_key_here
+    Mac/Linux: export ANTHROPIC_API_KEY=your_key_here
 """
 
-# ------------------------------------------------------------------------------
-# TEAM SETUP -- HOW TO INSTALL REQUIRED PACKAGES
-# Before running this program, you need to install the libraries it depends on.
-# Open a terminal in this project folder and run the command below ONE TIME:
-#
-## (Paste this into the terminal by opening a terminal) 
-## How to open a terminal: ctrl
-#   pip install pandas numpy anthropic pyais
-#
-# What each package does:
-#   pandas    -- loads and processes the AIS data tables
-#   numpy     -- fast math operations used in distance/bearing calculations
-#   anthropic -- connects to the Claude AI API to generate event summaries
-#   pyais     -- decodes raw NMEA AIS messages from .nmea / .ais / .txt files
-#
-# If you are using the project virtual environment (.venv), activate it first:
-#   Windows  : .venv\Scripts\activate
-#   Mac/Linux: source .venv/bin/activate
-# Then run the pip install command above.
-#
-# You will also need an Anthropic API key if you want AI summaries (Req #9).
-# Set it in your terminal before running the script:
-#   Windows  : set ANTHROPIC_API_KEY=your_key_here
-#   Mac/Linux: export ANTHROPIC_API_KEY=your_key_here
-# ------------------------------------------------------------------------------
-
-
-
-# ── Standard library imports ──────────────────────────────────────────────────
 import os
 import sys
 import json
@@ -97,11 +20,9 @@ import warnings
 from datetime import datetime, timezone
 from typing import Optional
 
-# Ensure Unicode characters (arrows, dashes, etc.) print correctly on all platforms
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# ── Third-party imports ───────────────────────────────────────────────────────
 import pandas as pd
 try:
     import anthropic
@@ -109,54 +30,24 @@ except ImportError:
     anthropic = None  # type: ignore
 
 try:
-    import pyais  # noqa: F401 — imported for availability check; used inside load_nmea()
+    import pyais  # noqa: F401
 except ImportError:
     pyais = None  # type: ignore
 
-# Suppress pandas performance warnings for large frame operations
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 1A: CONFIGURATION
-# All tunable thresholds and column aliases live here.
-# Adjust these values to match your specific AIS dataset characteristics.
 # ──────────────────────────────────────────────────────────────────────────────
 CONFIG = {
-    # ── Speed thresholds (knots) ──────────────────────────────────────────────
-    # SOG = Speed Over Ground. Vessels reporting below arrival_speed_max
-    # after previously moving are flagged as ARRIVAL candidates.
     "arrival_speed_max":    1.0,
-
-    # Vessels accelerating above this after being slow = DEPARTURE
     "departure_speed_min":  1.5,
-
-    # Near-zero speed sustained for stopped_min_rows = ANCHORING
     "anchoring_speed_max":  0.5,
-
-    # Minimum consecutive slow readings before labeling ANCHORING
-    # (helps filter noise/GPS drift in large datasets)
     "stopped_min_rows":     2,
-
-    # ── Route deviation threshold ─────────────────────────────────────────────
-    # COG = Course Over Ground. A bearing shift >= this value in degrees
-    # between consecutive rows for the same vessel = ROUTE_DEVIATION.
     "deviation_bearing_threshold": 45.0,
-
-    # ── Large dataset performance ─────────────────────────────────────────────
-    # Number of rows to read at a time when loading large CSV files.
-    # Increase for faster load (uses more RAM), decrease if memory is limited.
     "chunk_size": 500_000,
-
-    # Maximum number of AI summaries to generate in one run.
-    # Set to None to summarize all events (may be slow/costly for large datasets).
     "ai_summary_max_events": 500,
-
-    # Seconds to wait between Claude API calls to avoid rate limiting.
     "ai_summary_delay_sec": 0.3,
-
-    # ── Column name aliases ───────────────────────────────────────────────────
-    # The system will try each name in order until it finds a match.
-    # Add your dataset's column names here if they are not already listed.
     "col_mmsi": ["MMSI", "mmsi", "vessel_id", "VesselID", "VESSEL_ID"],
     "col_lat":  ["LAT", "Latitude", "lat", "latitude", "LATITUDE"],
     "col_lon":  ["LON", "Longitude", "lon", "longitude", "LONGITUDE"],
@@ -170,13 +61,9 @@ CONFIG = {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# MARITIME REGION LOOKUP TABLE
-# Used by get_region_name() to convert lat/lon into a human-readable location.
-# Ordered most-specific first so inner bays resolve before their parent ocean.
-# Each entry: (region_name, lat_min, lat_max, lon_min, lon_max)
+# MARITIME REGION LOOKUP TABLE — ordered most-specific first
 # ──────────────────────────────────────────────────────────────────────────────
 MARITIME_REGIONS = [
-    # ── US East Coast ports & bays ────────────────────────────────────────────
     ("Boston Harbor",                    42.20, 42.45, -71.10, -70.85),
     ("Long Island Sound",                40.80, 41.60, -74.00, -71.80),
     ("Port of New York/New Jersey",      40.40, 40.80, -74.30, -73.70),
@@ -187,27 +74,22 @@ MARITIME_REGIONS = [
     ("Port of Jacksonville",             30.20, 30.50, -81.75, -81.40),
     ("Port of Miami",                    25.70, 25.90, -80.25, -80.05),
     ("Tampa Bay",                        27.40, 28.20, -83.00, -82.30),
-    # ── US Gulf Coast ─────────────────────────────────────────────────────────
     ("Port of New Orleans",              29.80, 30.20, -90.50, -89.80),
     ("Mississippi River Delta",          28.50, 30.00, -91.50, -88.80),
     ("Mobile Bay",                       30.00, 30.80, -88.30, -87.80),
     ("Port of Houston / Galveston Bay",  29.20, 29.90, -95.20, -94.50),
     ("Port of Corpus Christi",           27.70, 28.00, -97.50, -97.10),
-    # ── US West Coast ports ───────────────────────────────────────────────────
     ("Port of Los Angeles / Long Beach", 33.50, 34.10, -118.55, -117.90),
     ("San Francisco Bay",                37.30, 38.20, -122.70, -122.10),
     ("Port of Portland, OR",             45.40, 45.70, -122.90, -122.60),
     ("Puget Sound",                      47.00, 48.60, -123.00, -122.00),
     ("Strait of Juan de Fuca",           48.00, 48.70, -124.70, -122.50),
-    # ── Alaska ────────────────────────────────────────────────────────────────
     ("Prince William Sound",             59.50, 61.50, -148.50, -145.50),
     ("Gulf of Alaska",                   54.00, 62.00, -162.00, -135.00),
-    # ── US coastal waters ─────────────────────────────────────────────────────
     ("Gulf of Mexico",                   18.00, 31.00,  -98.00,  -80.00),
     ("Caribbean Sea",                     8.00, 23.50,  -87.00,  -59.00),
     ("US East Coast (offshore)",         25.00, 47.00,  -80.00,  -65.00),
     ("US West Coast (offshore)",         32.00, 50.00, -130.00, -117.00),
-    # ── Major world maritime zones ────────────────────────────────────────────
     ("English Channel",                  49.00, 52.00,   -5.50,   3.00),
     ("North Sea",                        51.00, 62.00,   -5.00,  12.00),
     ("Baltic Sea",                       53.00, 66.00,    9.00,  31.00),
@@ -222,7 +104,6 @@ MARITIME_REGIONS = [
     ("East China Sea",                   22.00, 34.00,  117.00, 132.00),
     ("Sea of Japan",                     33.00, 45.00,  128.00, 142.00),
     ("Yellow Sea",                       31.00, 41.00,  118.00, 127.00),
-    # ── Ocean basin fallbacks ─────────────────────────────────────────────────
     ("North Atlantic Ocean",              0.00, 70.00,  -80.00,   0.00),
     ("South Atlantic Ocean",            -70.00,  0.00,  -65.00,  20.00),
     ("North Pacific Ocean",               0.00, 66.00, -180.00, -100.00),
@@ -233,8 +114,12 @@ MARITIME_REGIONS = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Section 1B  DATA IMPORT FUNCTION  — Paste this after the CONFIG block
-# Allows importing large datasets (850K+ rows) from your local computer..
+# SECTION 1B: DATA IMPORT
+# Opens a file browser, loads the dataset into memory, and saves a small preview.
+# Usage:
+#   df = import_dataset()
+#   labeled_df, events_df = run_pipeline_from_df(df)
+#   labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import tkinter as tk
@@ -244,17 +129,12 @@ def import_dataset(preview_rows: int = 10,
                    save_preview: bool = True,
                    preview_dir: str = "./preview") -> pd.DataFrame:
     """
-    Opens a file browser dialog so you can select your AIS dataset directly
-    from your computer. The full dataset is loaded into memory but is NOT
-    saved into your project folder. The folder will be too large if it exports the dataset with 
-    the function. You can easily change this if needed.
+    Opens a file browser to select an AIS dataset. The full dataset is loaded
+    into memory only — it is NOT written to the project folder.
     """
-
-    # ── Step 1: Open file browser dialog ─────────────────────────────────────
-    # Hide the root tkinter window — we only want the file picker
     root = tk.Tk()
     root.withdraw()
-    root.attributes("-topmost", True)  # Bring dialog to front of VS Code
+    root.attributes("-topmost", True)
 
     print("[IMPORT] Opening file browser — select your AIS dataset...")
 
@@ -269,48 +149,33 @@ def import_dataset(preview_rows: int = 10,
         ]
     )
 
-    root.destroy()  # Clean up the hidden tkinter window
+    root.destroy()
 
-    # User cancelled the dialog
     if not filepath:
         print("[IMPORT] No file selected. Exiting.")
         return None
 
     print(f"[IMPORT] Selected: {filepath}")
 
-    # ── Step 2: Load the full dataset into memory ONLY ────────────────────────
-    # load_file() reads the data but does NOT write anything to your project.
-    # The DataFrame lives only in RAM — gone when the script ends.
-    # This means no giant files sitting in your VS Code workspace or on GitHub.
     try:
         df = load_file(filepath)
     except Exception as e:
         print(f"[IMPORT] ERROR: Failed to load file — {e}")
         return None
 
-    # ── Step 3: Show a quick preview in the console ───────────────────────────
     print(f"\n[IMPORT] ── Dataset Preview (first {min(preview_rows, len(df))} rows) ──")
     print(df.head(preview_rows).to_string(index=False))
     print(f"\n[IMPORT] Shape   : {df.shape[0]:,} rows × {df.shape[1]} columns")
     print(f"[IMPORT] Columns : {list(df.columns)}")
 
-    # ── Step 4: Save a small preview file (optional) ──────────────────────────
-    # This tiny file (10 rows) IS saved to disk — safe to commit to GitHub.
-    # Useful for teammates or documentation to understand the data structure.
     if save_preview and len(df) > 0:
         os.makedirs(preview_dir, exist_ok=True)
-
-        # Name the preview file after the original dataset
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         preview_path = os.path.join(preview_dir, f"{base_name}_preview.csv")
-
         df.head(preview_rows).to_csv(preview_path, index=False)
         print(f"\n[IMPORT] Preview saved → {preview_path}")
-        print(f"         ({preview_rows} rows only — safe to commit to GitHub)")
 
-    print(f"\n[IMPORT] Full dataset ({df.shape[0]:,} rows) is loaded in memory only.")
-    print(f"         It will NOT be written to your project folder.")
-    print(f"         ✓ Your repository stays clean.\n")
+    print(f"\n[IMPORT] Full dataset ({df.shape[0]:,} rows) is loaded in memory only.\n")
 
     return df
 
@@ -320,23 +185,12 @@ def run_pipeline_from_df(df: pd.DataFrame,
                           ai_summaries: bool = False):
     """
     Run the full DDT pipeline on an already-loaded DataFrame.
-    Use this after import_dataset() so you don't re-load the file.
-
-    This version skips the file loading step and goes straight to
-    column resolution, event detection, and export.
+    Skips the file-loading step and goes straight to event detection and export.
 
     Args:
         df           : DataFrame returned by import_dataset()
         output_dir   : Where to save the labeled output CSVs
-        ai_summaries : Whether to generate Claude AI summaries (Req #9)
-
-    Returns:
-        labeled_df   : Original data + new event label columns
-        events_df    : Events-only summary DataFrame
-
-    Example:
-        df = import_dataset()
-        labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
+        ai_summaries : Whether to generate Claude AI summaries
     """
     if df is None or df.empty:
         print("[ERROR] No data to process. Run import_dataset() first.")
@@ -348,7 +202,6 @@ def run_pipeline_from_df(df: pd.DataFrame,
 
     start_time = time.time()
 
-    # Resolve column names from the loaded DataFrame
     print_section("COLUMN RESOLUTION")
     cols = resolve_columns(df)
     print(f"  MMSI  → '{cols['mmsi']}'")
@@ -359,51 +212,40 @@ def run_pipeline_from_df(df: pd.DataFrame,
     print(f"  COG   → {repr(cols['cog'])}")
     print(f"  NAME  → {repr(cols['name'])}")
 
-    # -- Date filter: choose all rows or specific day(s) before processing
     df, date_label = prompt_date_filter(df, cols["time"])
 
-    # -- Sort and deduplicate so every vessel's track is in chronological order
-    # and duplicate pings (same vessel, same timestamp) are collapsed to one row
     print_section("PREPROCESSING")
     df[cols["time"]] = pd.to_datetime(df[cols["time"]], errors="coerce")
     df = df.sort_values([cols["mmsi"], cols["time"]]).reset_index(drop=True)
     before = len(df)
-    df = df.drop_duplicates(keep="first")  # only removes rows identical across every column
+    df = df.drop_duplicates(keep="first")
     removed = before - len(df)
     if removed:
         print(f"[PREP] Removed {removed:,} duplicate vessel/timestamp rows.")
     print(f"[PREP] {len(df):,} clean rows ready for processing.")
 
-    # Run event detection
     events_df = detect_events(df, cols)
 
-    # Optional AI summaries
     if ai_summaries and events_df is not None and not events_df.empty:
         events_df = generate_ai_summaries(events_df)
 
-    # Merge labels into original DataFrame
     labeled_df = build_labeled_dataset(df, events_df, cols)
 
-    # Export outputs -- date label in filename prevents overwriting previous runs
     print_section("EXPORTING OUTPUTS")
     os.makedirs(output_dir, exist_ok=True)
 
     file_prefix = date_label if date_label != "all" else "full_dataset"
 
-    # Output 1: Event rows only (rows where an event was detected — compact)
     events_only = labeled_df[labeled_df["event_type"].notna()].copy()
     labeled_path = os.path.join(output_dir, file_prefix + "_events_labeled.csv")
     export_csv(events_only, labeled_path, label="Event-labeled rows")
 
-    # Output 2: Events summary (one row per event)
     if events_df is not None and not events_df.empty:
         events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
         export_csv(events_df, events_path, label="Events summary")
 
-    # Output 3: One-row-per-vessel status table
     export_vessel_status_table(df, events_df, output_dir, file_prefix)
 
-    # Summary
     print_pipeline_summary("imported_dataset", labeled_df, events_df, output_dir)
 
     elapsed = time.time() - start_time
@@ -414,28 +256,11 @@ def run_pipeline_from_df(df: pd.DataFrame,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HOW TO USE — run these two lines at the bottom of your script
-# (or in a new cell if using Jupyter):
-#
-#   df = import_dataset()                          # Opens file browser
-#   labeled_df, events_df = run_pipeline_from_df(df)
-#
-# With AI summaries:
-#   labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # SECTION 1C: DATE FILTER
-# Lets you process just one day (or a few days) instead of the full year.
-# Applied right after column resolution, before any detection runs.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def filter_by_dates(df, time_col, dates):
-    """
-    Filter DataFrame to rows whose date matches any entry in the dates list.
-    dates: list of date strings in YYYY-MM-DD format.
-    """
+    """Filter DataFrame to rows matching any date in the provided YYYY-MM-DD list."""
     date_series = pd.to_datetime(df[time_col], errors="coerce").dt.date
     target_dates = []
     for d in dates:
@@ -455,7 +280,7 @@ def filter_by_dates(df, time_col, dates):
 
 def prompt_date_filter(df, time_col):
     """
-    Interactive menu: process all rows, or filter to specific date(s).
+    Interactive menu to process all rows or filter to specific date(s).
     Returns (filtered_df, date_label) where date_label is used in output filenames.
     """
     total = len(df)
@@ -519,25 +344,16 @@ def prompt_date_filter(df, time_col):
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 2: UTILITY FUNCTIONS
-# Small, reusable helper functions used throughout the pipeline.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def bearing_change_vectorized(cog1: pd.Series, cog2: pd.Series) -> pd.Series:
-    """
-    Vectorized absolute angular difference between two bearing Series (0–180°).
-    Used for route deviation detection across all rows simultaneously.
-    """
+    """Vectorized absolute angular difference between two bearing Series (0–180°)."""
     diff = (cog1 - cog2).abs() % 360
-    # Angles > 180 wrap around — take the shorter arc
     return diff.where(diff <= 180, 360 - diff)
 
 
 def resolve_column(df: pd.DataFrame, candidates: list) -> Optional[str]:
-    """
-    Find the first matching column name from a list of candidates.
-    Returns the matched column name, or None if no match is found.
-    Case-sensitive — ensure your column aliases in CONFIG match exactly.
-    """
+    """Return the first matching column name from candidates, or None."""
     for c in candidates:
         if c in df.columns:
             return c
@@ -545,10 +361,7 @@ def resolve_column(df: pd.DataFrame, candidates: list) -> Optional[str]:
 
 
 def make_event_id() -> str:
-    """
-    Generate a unique event identifier in the format EVT-XXXXXXXX.
-    UUIDs ensure no two events share an ID even across parallel runs.
-    """
+    """Generate a unique event identifier in the format EVT-XXXXXXXX."""
     return "EVT-" + str(uuid.uuid4())[:8].upper()
 
 
@@ -556,29 +369,8 @@ def confidence_score(event_type: str,
                      sog_value: Optional[float] = None,
                      bearing_change: Optional[float] = None) -> float:
     """
-    Rule-based confidence scoring (0.0 – 1.0) for a detected event.
-
-    Base scores are set by event type, then adjusted by supporting signals:
-
-    ROUTE_DEVIATION scoring factors:
-      - Bearing change magnitude  : larger turns are harder to explain as noise
-          45–60°  → base 0.70
-          60–90°  → +0.08  (moderate turn)
-          90–135° → +0.13  (sharp turn)
-          >135°   → +0.17  (near-reversal — very strong signal)
-      - Speed at time of turn:
-          > 5 kts  → +0.05  (vessel clearly underway, not drifting)
-          < 1.5 kts → -0.10 (slow maneuvering in port; may not be a true deviation)
-
-    Other event types use SOG as the primary signal (arrival/departure/anchoring).
-
-    Args:
-        event_type     : ARRIVAL, DEPARTURE, ANCHORING, ROUTE_DEVIATION, PROXIMITY
-        sog_value      : Speed Over Ground at time of event (knots)
-        bearing_change : Absolute bearing change in degrees (ROUTE_DEVIATION only)
-
-    Returns:
-        float between 0.0 and 1.0
+    Rule-based confidence scoring (0.0–1.0) for a detected event.
+    Base scores are set by event type, then adjusted by SOG and bearing magnitude.
     """
     base = {
         "ARRIVAL":         0.80,
@@ -589,7 +381,6 @@ def confidence_score(event_type: str,
     }.get(event_type, 0.60)
 
     if event_type == "ROUTE_DEVIATION":
-        # Adjust for how sharp the turn was
         if bearing_change is not None and not pd.isna(bearing_change):
             if bearing_change > 135:
                 base = min(base + 0.17, 1.0)
@@ -597,15 +388,12 @@ def confidence_score(event_type: str,
                 base = min(base + 0.13, 1.0)
             elif bearing_change > 60:
                 base = min(base + 0.08, 1.0)
-            # 45–60° range: no adjustment — that's the detection threshold itself
-        # Adjust for speed (slow = could just be port maneuvering)
         if sog_value is not None and not pd.isna(sog_value):
             if sog_value > 5.0:
                 base = min(base + 0.05, 1.0)
             elif sog_value < 1.5:
                 base = max(base - 0.10, 0.0)
     else:
-        # Boost confidence when SOG makes other event types very clear
         if sog_value is not None and not pd.isna(sog_value):
             if event_type in ("ARRIVAL", "ANCHORING") and sog_value < 0.2:
                 base = min(base + 0.10, 1.0)
@@ -616,18 +404,14 @@ def confidence_score(event_type: str,
 
 
 def print_section(title: str):
-    """Print a formatted section header to the console for pipeline readability."""
+    """Print a formatted section header."""
     print(f"\n{'─' * 60}")
     print(f"  {title}")
     print(f"{'─' * 60}")
 
 
 def get_region_name(lat: float, lon: float) -> str:
-    """
-    Return a human-readable maritime region name for a lat/lon coordinate.
-    Uses the MARITIME_REGIONS priority list (most specific first).
-    Falls back to a cardinal open-ocean description if no region matches.
-    """
+    """Return a human-readable maritime region name for a lat/lon coordinate."""
     if pd.isna(lat) or pd.isna(lon):
         return "Unknown Location"
     for name, lat_min, lat_max, lon_min, lon_max in MARITIME_REGIONS:
@@ -658,8 +442,7 @@ def describe_vessel_status(sog: Optional[float],
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 2B: VESSEL LOOKUP
-# Call lookup_vessel(labeled_df, events_df, <MMSI or name>) after running the
-# pipeline to get a plain-English status report for any specific vessel.
+# Call lookup_vessel(labeled_df, events_df, <MMSI or name>) for a status report.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def lookup_vessel(df: pd.DataFrame,
@@ -667,23 +450,8 @@ def lookup_vessel(df: pd.DataFrame,
                   identifier,
                   print_report: bool = True) -> str:
     """
-    Look up a vessel by MMSI or name and print a plain-English status report.
-
-    Shows:
-      - Last known position with named region
-      - Current speed / activity description
-      - Destination and ETA (if present in the dataset)
-      - All detected events for this vessel with location and description
-
-    Args:
-        df           : The labeled (or raw) AIS DataFrame
-        events_df    : Events summary DataFrame from the pipeline
-        identifier   : MMSI number (int/str) OR vessel name (partial match OK)
-        print_report : Print to console (default True); always returns the string
-
-    Usage:
-        lookup_vessel(labeled_df, events_df, 123456789)
-        lookup_vessel(labeled_df, events_df, "EVER GIVEN")
+    Look up a vessel by MMSI or name and return a plain-English status report.
+    Accepts exact MMSI or partial case-insensitive vessel name.
     """
     cols     = resolve_columns(df)
     col_mmsi = cols["mmsi"]
@@ -694,14 +462,12 @@ def lookup_vessel(df: pd.DataFrame,
     col_cog  = cols.get("cog")
     col_name = cols.get("name")
 
-    # Optional AIS fields that are present in some (not all) datasets
     col_dest   = resolve_column(df, CONFIG["col_dest"])
     col_eta    = resolve_column(df, CONFIG["col_eta"])
     col_status = resolve_column(df, CONFIG["col_status"])
 
     ident_str = str(identifier).strip()
 
-    # Try exact MMSI match first, then case-insensitive partial name match
     mask = df[col_mmsi].astype(str) == ident_str
     if not mask.any() and col_name:
         mask = df[col_name].astype(str).str.upper().str.contains(
@@ -718,7 +484,6 @@ def lookup_vessel(df: pd.DataFrame,
     vessel_rows[col_time] = pd.to_datetime(vessel_rows[col_time], errors="coerce")
     latest               = vessel_rows.sort_values(col_time).iloc[-1]
 
-    # ── Core fields ───────────────────────────────────────────────────────────
     v_name = (str(latest[col_name])
               if col_name and not pd.isna(latest.get(col_name, float("nan")))
               else "Unknown")
@@ -734,7 +499,6 @@ def lookup_vessel(df: pd.DataFrame,
            if col_cog and not pd.isna(latest.get(col_cog, float("nan"))) else None)
     activity = describe_vessel_status(sog, cog)
 
-    # ── Optional AIS fields ───────────────────────────────────────────────────
     destination = (str(latest[col_dest])
                    if col_dest and not pd.isna(latest.get(col_dest, float("nan"))) else None)
     eta         = (str(latest[col_eta])
@@ -742,7 +506,6 @@ def lookup_vessel(df: pd.DataFrame,
     nav_status  = (str(latest[col_status])
                    if col_status and not pd.isna(latest.get(col_status, float("nan"))) else None)
 
-    # ── Detected events for this vessel ──────────────────────────────────────
     vessel_events = []
     if events_df is not None and not events_df.empty:
         ev_mask = events_df["vessel_id"].astype(str).str.contains(
@@ -754,7 +517,6 @@ def lookup_vessel(df: pd.DataFrame,
                              .head(10)
                              .to_dict("records"))
 
-    # ── Format the report ─────────────────────────────────────────────────────
     sep = "=" * 55
     lines = [
         sep,
@@ -803,7 +565,7 @@ def lookup_vessel(df: pd.DataFrame,
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 2C: BULK VESSEL STATUS EXPORT
-# Produces a one-row-per-vessel CSV — fast on 8M+ rows via groupby().last().
+# Produces a one-row-per-vessel CSV via groupby().last() — efficient on 8M+ rows.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def export_vessel_status_table(df: pd.DataFrame,
@@ -811,23 +573,9 @@ def export_vessel_status_table(df: pd.DataFrame,
                                 output_dir: str,
                                 file_prefix: str) -> pd.DataFrame:
     """
-    Build and export a one-row-per-vessel status table.
-
+    Build and export a one-row-per-vessel status table to CSV.
     Columns: MMSI, vessel_name, last_seen, region_name, lat, lon,
-             activity, event_count  (+ destination/eta if in data)
-
-    Uses sort + groupby().last() — single pass, ~10–30 s on 8M rows.
-    The apply() calls for region/activity run only on the small per-vessel
-    table (hundreds to thousands of rows), not the full dataset.
-
-    Args:
-        df          : Full AIS DataFrame (raw or labeled)
-        events_df   : Events summary DataFrame from the pipeline (may be None)
-        output_dir  : Directory where the CSV will be saved
-        file_prefix : Filename prefix (e.g. "2023-06-15" or "full_dataset")
-
-    Returns:
-        status DataFrame (also exported to CSV)
+             activity, event_count (+ destination/eta if present).
     """
     print("[STATUS TABLE] Building per-vessel status table...")
 
@@ -842,8 +590,6 @@ def export_vessel_status_table(df: pd.DataFrame,
     col_dest = resolve_column(df, CONFIG["col_dest"])
     col_eta  = resolve_column(df, CONFIG["col_eta"])
 
-    # Sort by time (detect_events already parsed timestamps in-place)
-    # Only bring along columns we need before sorting to save memory
     keep = [col_mmsi, col_time, col_lat, col_lon]
     for c in [col_sog, col_cog, col_name, col_dest, col_eta]:
         if c and c in df.columns and c not in keep:
@@ -855,7 +601,6 @@ def export_vessel_status_table(df: pd.DataFrame,
               .last()
               .reset_index())
 
-    # Rename to clean standard names
     rename = {col_mmsi: "MMSI", col_time: "last_seen",
               col_lat: "lat", col_lon: "lon"}
     if col_sog:
@@ -870,7 +615,6 @@ def export_vessel_status_table(df: pd.DataFrame,
         rename[col_eta] = "eta"
     status = status.rename(columns=rename)
 
-    # Fill missing vessel_name with MMSI string
     if "vessel_name" not in status.columns:
         status["vessel_name"] = status["MMSI"].astype(str)
     else:
@@ -881,12 +625,10 @@ def export_vessel_status_table(df: pd.DataFrame,
             .fillna(status["MMSI"].astype(str))
         )
 
-    # Region name — runs on the small per-vessel table, not 8M rows
     status["region_name"] = status.apply(
         lambda r: get_region_name(float(r["lat"]), float(r["lon"])), axis=1
     )
 
-    # Activity description
     status["activity"] = status.apply(
         lambda r: describe_vessel_status(
             float(r["_sog"]) if "_sog" in r and pd.notna(r["_sog"]) else None,
@@ -895,11 +637,9 @@ def export_vessel_status_table(df: pd.DataFrame,
         axis=1,
     )
 
-    # AIS ping count per vessel (how many position reports we received for each ship)
     ping_counts = df[col_mmsi].value_counts().rename("ping_count")
     status["ping_count"] = status["MMSI"].map(ping_counts).fillna(0).astype(int)
 
-    # Event counts per vessel
     if events_df is not None and not events_df.empty:
         event_counts = (events_df["vessel_id"]
                         .astype(str)
@@ -908,7 +648,6 @@ def export_vessel_status_table(df: pd.DataFrame,
         status["_mmsi_str"] = status["MMSI"].astype(str)
         status = status.join(event_counts, on="_mmsi_str").drop(columns="_mmsi_str")
 
-        # Route deviation count and average confidence per vessel
         dev_events = events_df[events_df["event_type"] == "ROUTE_DEVIATION"].copy()
         dev_events["_mmsi_str"] = dev_events["vessel_id"].astype(str)
 
@@ -930,7 +669,6 @@ def export_vessel_status_table(df: pd.DataFrame,
     status["event_count"]    = status["event_count"].fillna(0).astype(int)
     status["deviation_count"] = status["deviation_count"].fillna(0).astype(int)
 
-    # Human-readable confidence label for deviations
     def _conf_label(row):
         if row["deviation_count"] == 0:
             return "N/A"
@@ -948,7 +686,6 @@ def export_vessel_status_table(df: pd.DataFrame,
     status["deviation_confidence"] = status.apply(_conf_label, axis=1)
     status = status.drop(columns=["_avg_dev_conf"])
 
-    # Drop internal helper columns and set final column order
     status = status.drop(columns=[c for c in ["_sog", "_cog"] if c in status.columns])
     output_cols = ["MMSI", "vessel_name", "ping_count", "last_seen", "region_name",
                    "lat", "lon", "activity", "deviation_count",
@@ -958,7 +695,6 @@ def export_vessel_status_table(df: pd.DataFrame,
             output_cols.append(opt)
     status = status[[c for c in output_cols if c in status.columns]]
 
-    # Export
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, file_prefix + "_vessel_status.csv")
     status.to_csv(out_path, index=False)
@@ -973,18 +709,11 @@ def export_vessel_status_table(df: pd.DataFrame,
 
 def load_csv(filepath: str) -> pd.DataFrame:
     """
-    Load AIS data from a CSV file with performance optimizations for large files.
-
-    For datasets of 8M+ rows, we use chunked reading to avoid loading the
-    entire file into memory at once. Chunks are concatenated after loading.
-    dtype optimization (float32 for lat/lon/sog/cog) reduces memory by ~40%.
-
-    Req #10: CSV format support.
+    Load AIS data from a CSV using chunked reading and dtype optimization
+    to handle 8M+ row datasets with reduced memory usage.
     """
     print(f"[LOAD] Reading CSV: {filepath}")
 
-    # Optimized dtypes for common AIS columns — reduces RAM usage significantly
-    # float32 is sufficient precision for lat/lon/speed/course in AIS data
     dtype_hints = {
         "LAT": "float32", "Latitude": "float32", "lat": "float32",
         "LON": "float32", "Longitude": "float32", "lon": "float32",
@@ -992,13 +721,12 @@ def load_csv(filepath: str) -> pd.DataFrame:
         "COG": "float32", "cog": "float32", "Course": "float32",
     }
 
-    # Read in chunks to handle 8M+ rows without memory errors
     chunks = []
     total_rows = 0
 
     for chunk in pd.read_csv(filepath, chunksize=CONFIG["chunk_size"],
                               low_memory=False, dtype=dtype_hints,
-                              on_bad_lines="skip"):  # skip malformed rows
+                              on_bad_lines="skip"):
         chunks.append(chunk)
         total_rows += len(chunk)
         print(f"       ...loaded {total_rows:,} rows", end="\r")
@@ -1011,20 +739,14 @@ def load_csv(filepath: str) -> pd.DataFrame:
 def load_json(filepath: str) -> pd.DataFrame:
     """
     Load AIS data from a JSON file.
-    Supports two formats:
-      1. Array of records: [{"MMSI": 123, ...}, ...]
-      2. Newline-delimited JSON (NDJSON): one record per line
-
-    Req #10: JSON format support.
+    Supports standard JSON arrays and newline-delimited JSON (NDJSON).
     """
     print(f"[LOAD] Reading JSON: {filepath}")
     try:
-        # Try standard JSON array first
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         df = pd.DataFrame(data) if isinstance(data, list) else pd.json_normalize(data)
     except json.JSONDecodeError:
-        # Fall back to newline-delimited JSON
         print("[LOAD] Standard JSON parse failed — trying newline-delimited JSON...")
         df = pd.read_json(filepath, lines=True)
 
@@ -1034,14 +756,8 @@ def load_json(filepath: str) -> pd.DataFrame:
 
 def load_nmea(filepath: str) -> pd.DataFrame:
     """
-    Parse NMEA 0183 AIS sentences (VDM/VDO message types) into a DataFrame.
-    Decodes each sentence to extract: MMSI, LAT, LON, SOG, COG.
-    Timestamps use the current UTC time as a fallback when not encoded.
-
-    Requires: pip install pyais
-    Ref: https://pyais.readthedocs.io
-
-    Req #10: NMEA AIS dataset support.
+    Parse NMEA 0183 AIS sentences into a DataFrame.
+    Extracts MMSI, LAT, LON, SOG, COG. Requires: pip install pyais
     """
     print(f"[LOAD] Reading NMEA AIS: {filepath}")
     try:
@@ -1059,8 +775,6 @@ def load_nmea(filepath: str) -> pd.DataFrame:
         for msg in stream:
             try:
                 decoded = msg.decode()
-                # Extract standard AIS fields — getattr with None default handles
-                # message types that don't carry all fields (e.g. type 5 vs type 1)
                 record = {
                     "MMSI":         getattr(decoded, "mmsi", None),
                     "LAT":          getattr(decoded, "lat",  None),
@@ -1068,13 +782,10 @@ def load_nmea(filepath: str) -> pd.DataFrame:
                     "SOG":          getattr(decoded, "speed", None),
                     "COG":          getattr(decoded, "course", None),
                     "VesselName":   getattr(decoded, "shipname", None),
-                    # NMEA sentences don't always carry timestamps;
-                    # use current UTC as a best-effort fallback
                     "BaseDateTime": datetime.now(timezone.utc).isoformat(),
                 }
                 records.append(record)
             except Exception:
-                # Malformed or unsupported sentence types are skipped silently
                 skipped += 1
                 continue
 
@@ -1084,12 +795,7 @@ def load_nmea(filepath: str) -> pd.DataFrame:
 
 
 def load_file(filepath: str) -> pd.DataFrame:
-    """
-    Auto-detect input file type by extension and route to the correct loader.
-    Supported: .csv, .json, .nmea, .txt, .ais
-
-    Req #10: System compatibility with all three formats.
-    """
+    """Auto-detect input file type and route to the correct loader (.csv, .json, .nmea/.txt/.ais)."""
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Input file not found: '{filepath}'")
 
@@ -1110,22 +816,17 @@ def load_file(filepath: str) -> pd.DataFrame:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 4: COLUMN RESOLUTION
-# Maps dataset column names to internal standardized keys.
+# Maps dataset column names to internal standardized keys using CONFIG aliases.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def resolve_columns(df: pd.DataFrame) -> dict:
     """
-    Resolve the actual column names in the DataFrame against the CONFIG aliases.
-    Returns a mapping of internal keys (mmsi, lat, lon, time, sog, cog, name)
-    to the real column names found in the DataFrame.
-
-    Required columns (mmsi, lat, lon, time) will raise an error if not found.
-    Optional columns (sog, cog, name) return None if not found — pipeline
-    degrades gracefully (e.g. skips deviation detection if COG is absent).
+    Resolve actual DataFrame column names against CONFIG aliases.
+    Required columns (mmsi, lat, lon, time) raise an error if not found.
+    Optional columns (sog, cog, name) return None — pipeline degrades gracefully.
     """
     mapping = {}
 
-    # These four are REQUIRED — pipeline cannot run without them
     required = {
         "mmsi": CONFIG["col_mmsi"],
         "lat":  CONFIG["col_lat"],
@@ -1133,11 +834,10 @@ def resolve_columns(df: pd.DataFrame) -> dict:
         "time": CONFIG["col_time"],
     }
 
-    # These are OPTIONAL — detection is partially skipped if absent
     optional = {
-        "sog":  CONFIG["col_sog"],   # Speed — needed for arrival/departure/anchoring
-        "cog":  CONFIG["col_cog"],   # Course — needed for route deviation
-        "name": CONFIG["col_name"],  # Vessel name — cosmetic, not required
+        "sog":  CONFIG["col_sog"],
+        "cog":  CONFIG["col_cog"],
+        "name": CONFIG["col_name"],
     }
 
     for key, candidates in required.items():
@@ -1152,53 +852,31 @@ def resolve_columns(df: pd.DataFrame) -> dict:
         mapping[key] = col
 
     for key, candidates in optional.items():
-        mapping[key] = resolve_column(df, candidates)  # None if not found
+        mapping[key] = resolve_column(df, candidates)
 
     return mapping
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 5: EVENT DETECTION ENGINE
-# Core AI/rule-based logic for identifying vessel events.
-# All operations are vectorized for performance on large datasets.
+# Vectorized detection of ARRIVAL, DEPARTURE, ANCHORING, and ROUTE_DEVIATION.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
     """
-    Main event detection function. Processes the full AIS DataFrame and
-    returns a new DataFrame of detected events (one row per event).
-
-    Detection strategy:
-    - Sort each vessel's track by timestamp
-    - Use vectorized shift() comparisons to flag state transitions
-    - Proximity uses time-bucketed spatial grouping for scalability
-
-    Detects (Req #4):
-      ARRIVAL         — vessel slows to near-stop after moving
-      DEPARTURE        — vessel accelerates after being stopped
-      ANCHORING        — vessel remains near-stationary for multiple readings
-      ROUTE_DEVIATION  — sudden large bearing change
-      PROXIMITY        — two vessels within N nautical miles simultaneously
-
-    Returns:
-        pd.DataFrame with columns: event_id, vessel_id, vessel_name,
-        event_type, timestamp, latitude, longitude, confidence_score, null_flags
+    Main event detection function. Returns a DataFrame of detected events
+    (one row per event) with columns: event_id, vessel_id, vessel_name,
+    event_type, timestamp, latitude, longitude, confidence_score, null_flags.
     """
     print_section("EVENT DETECTION")
 
-    # Unpack column name references from the resolved mapping
     col_mmsi = cols["mmsi"]
-    col_lat  = cols["lat"]
-    col_lon  = cols["lon"]
     col_time = cols["time"]
     col_sog  = cols["sog"]
     col_cog  = cols["cog"]
-    col_name = cols["name"]
 
     all_events = []
 
-    # ── Step 1: Parse and sort by vessel + time ───────────────────────────────
-    # Sorting is critical — all shift-based detections assume chronological order
     print("[DETECT] Parsing timestamps and sorting...")
     df[col_time] = pd.to_datetime(df[col_time], errors="coerce")
     df = df.sort_values([col_mmsi, col_time]).reset_index(drop=True)
@@ -1206,16 +884,12 @@ def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
     n_vessels = df[col_mmsi].nunique()
     print(f"[DETECT] {len(df):,} rows | {n_vessels:,} unique vessels")
 
-    # ── Step 2: Speed-based events (ARRIVAL, DEPARTURE, ANCHORING) ────────────
-    # These all require SOG — skip if column not found
     if col_sog:
         print("[DETECT] Running speed-based event detection (arrival / departure / anchoring)...")
         all_events += _detect_speed_events(df, cols)
     else:
         print("[DETECT] WARNING: SOG column not found — skipping speed-based events.")
 
-    # ── Step 3: Course-based events (ROUTE_DEVIATION) ────────────────────────
-    # Requires COG — skip if column not found
     if col_cog:
         print("[DETECT] Running course deviation detection...")
         all_events += _detect_route_deviations(df, cols)
@@ -1228,7 +902,6 @@ def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
     events_df = pd.DataFrame(all_events)
-    # Add human-readable region name to every event
     events_df["region_name"] = events_df.apply(
         lambda r: get_region_name(r["latitude"], r["longitude"]), axis=1
     )
@@ -1237,15 +910,8 @@ def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
 
 def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
     """
-    Vectorized detection of ARRIVAL, DEPARTURE, and ANCHORING events.
-
-    Uses pandas shift() to compare each row's SOG against the previous row
-    for the same vessel. This avoids Python loops on 8M+ rows.
-
-    Logic:
-      ARRIVAL   : prev_SOG > arrival_max AND curr_SOG <= arrival_max
-      DEPARTURE : prev_SOG <= arrival_max AND curr_SOG >= departure_min
-      ANCHORING : SOG <= anchoring_max for stopped_min_rows consecutive rows
+    Vectorized detection of ARRIVAL, DEPARTURE, and ANCHORING using shift()
+    comparisons per vessel. Anchoring uses a rolling minimum SOG window.
     """
     col_mmsi = cols["mmsi"]
     col_lat  = cols["lat"]
@@ -1256,33 +922,24 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
 
     events = []
 
-    # Shift SOG within each vessel group (not across vessels)
-    # prev_sog aligns the previous row's speed with the current row
     df["_prev_sog"] = df.groupby(col_mmsi)[col_sog].shift(1)
 
     arr_max  = CONFIG["arrival_speed_max"]
     dep_min  = CONFIG["departure_speed_min"]
     anc_max  = CONFIG["anchoring_speed_max"]
 
-    # ── ARRIVAL mask ─────────────────────────────────────────────────────────
-    # Vessel was moving, now slow — transition into port/stop zone
     arrival_mask = (
         df["_prev_sog"].notna() &
         (df["_prev_sog"] > arr_max) &
         (df[col_sog] <= arr_max)
     )
 
-    # ── DEPARTURE mask ────────────────────────────────────────────────────────
-    # Vessel was slow/stopped, now accelerating — leaving port/anchorage
     departure_mask = (
         df["_prev_sog"].notna() &
         (df["_prev_sog"] <= arr_max) &
         (df[col_sog] >= dep_min)
     )
 
-    # ── ANCHORING detection ───────────────────────────────────────────────────
-    # Vessel nearly stationary — use rolling minimum per vessel to check
-    # that SOG stays low for at least stopped_min_rows consecutive rows
     min_rows = CONFIG["stopped_min_rows"]
     df["_rolling_min_sog"] = (
         df.groupby(col_mmsi)[col_sog]
@@ -1290,7 +947,6 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
     )
     anchoring_mask = df["_rolling_min_sog"].notna() & (df["_rolling_min_sog"] <= anc_max)
 
-    # ── Build event records from masked rows ─────────────────────────────────
     for event_type, mask in [
         ("ARRIVAL",   arrival_mask),
         ("DEPARTURE", departure_mask),
@@ -1302,7 +958,6 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
         matched = df[mask][cols_needed].copy()
         n_matched = len(matched)
 
-        # Extract as numpy arrays — avoids slow iterrows() on large matched sets
         mmsi_arr = matched[col_mmsi].to_numpy()
         lat_arr  = matched[col_lat].to_numpy()
         lon_arr  = matched[col_lon].to_numpy()
@@ -1310,7 +965,6 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
         sog_arr  = matched[col_sog].to_numpy()
         name_arr = matched[col_name].to_numpy() if col_name else None
 
-        # Vectorized null-flag computation across all matched rows at once
         null_check_cols = [col_lat, col_lon, col_time, col_sog]
         null_matrix = pd.isna(matched[null_check_cols]).to_numpy()
 
@@ -1333,19 +987,14 @@ def _detect_speed_events(df: pd.DataFrame, cols: dict) -> list:
 
         print(f"         {event_type:<20} → {n_matched:,} events detected")
 
-    # Clean up temporary columns
     df.drop(columns=["_prev_sog", "_rolling_min_sog"], inplace=True, errors="ignore")
     return events
 
 
 def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
     """
-    Vectorized detection of ROUTE_DEVIATION events.
-
-    Compares each vessel's current COG against its previous COG.
-    A deviation >= deviation_bearing_threshold degrees is flagged.
-
-    This handles the 0°/360° wrap-around in bearings correctly.
+    Vectorized detection of ROUTE_DEVIATION events by comparing each vessel's
+    current COG against its previous COG. Handles 0°/360° wrap-around correctly.
     """
     col_mmsi = cols["mmsi"]
     col_lat  = cols["lat"]
@@ -1357,15 +1006,11 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
 
     events = []
 
-    # Shift COG within each vessel to get previous course reading
     df["_prev_cog"] = df.groupby(col_mmsi)[col_cog].shift(1)
-
-    # Compute bearing change using vectorized function
     df["_bearing_change"] = bearing_change_vectorized(df[col_cog], df["_prev_cog"])
 
     threshold = CONFIG["deviation_bearing_threshold"]
 
-    # Flag rows where bearing change meets or exceeds threshold
     deviation_mask = (
         df["_prev_cog"].notna() &
         df[col_cog].notna() &
@@ -1374,7 +1019,6 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
 
     matched = df[deviation_mask]
 
-    # Extract matched rows as arrays — avoids slow iterrows() over large deviation sets
     dev_cols = [col_mmsi, col_lat, col_lon, col_time, col_cog, "_bearing_change", "_prev_cog"]
     if col_sog:
         dev_cols.append(col_sog)
@@ -1401,7 +1045,6 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
         sog_val  = float(sog_raw) if sog_raw is not None and not pd.isna(sog_raw) else None
         nulls    = [c for c, bad in zip(null_check_cols, null_matrix[k]) if bad]
 
-        # Build a specific label describing what the vessel did in this turn
         b_deg    = float(bearing_arr[k]) if not pd.isna(bearing_arr[k]) else 0.0
         curr_cog = float(cog_arr[k])      if not pd.isna(cog_arr[k])    else None
         prev_cog = float(prev_cog_arr[k]) if not pd.isna(prev_cog_arr[k]) else None
@@ -1431,56 +1074,36 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
 
     print(f"         {'ROUTE_DEVIATION':<20} → {n_dev:,} events detected")
 
-    # Clean up temporary columns
     df.drop(columns=["_prev_cog", "_bearing_change"], inplace=True, errors="ignore")
     return events
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 6: AI NATURAL LANGUAGE SUMMARIES
-# Uses the Claude API to generate plain-English descriptions of each event.
+# Calls the Claude API to generate a plain-English summary for each event.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate a short natural-language AI summary for each detected event
-    using the Claude API (Req #9).
-
-    Each summary is a 1-2 sentence plain-English description of the event,
-    suitable for display in dashboards or analyst reports.
-
-    Summaries are added as a new column 'ai_summary' in the events DataFrame.
-
-    Notes:
-    - Requires ANTHROPIC_API_KEY environment variable to be set
-    - Rate-limited by CONFIG['ai_summary_delay_sec'] to avoid API errors
-    - Limited to CONFIG['ai_summary_max_events'] rows to control cost/time
-    - If the API call fails, summary is set to the error message
-
-    Req #9: Natural Language AI Event Summary.
+    Generate a 1-sentence AI summary per event using the Claude API.
+    Adds an 'ai_summary' column to the events DataFrame.
+    Requires ANTHROPIC_API_KEY environment variable.
     """
-    print_section("AI EVENT SUMMARIES  (Req #9)")
+    print_section("AI EVENT SUMMARIES")
 
-    # Check that anthropic was successfully imported at module load
     if anthropic is None:
-        print("[AI] WARNING: anthropic package not installed.")
-        print("     Install with: pip install anthropic")
+        print("[AI] WARNING: anthropic package not installed. Run: pip install anthropic")
         events_df["ai_summary"] = "AI summary unavailable (anthropic not installed)"
         return events_df
 
-    # Check for API key in environment
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("[AI] WARNING: ANTHROPIC_API_KEY environment variable not set.")
-        print("     Set it with: export ANTHROPIC_API_KEY=your_key_here")
-        print("     Skipping AI summaries.")
+        print("[AI] WARNING: ANTHROPIC_API_KEY not set. Skipping AI summaries.")
         events_df["ai_summary"] = "AI summary unavailable (no API key)"
         return events_df
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Limit the number of events we send to the API to control cost and time.
-    # For production, you could increase this or run in batches overnight.
     max_events = CONFIG["ai_summary_max_events"]
     total = min(len(events_df), max_events) if max_events else len(events_df)
 
@@ -1493,7 +1116,6 @@ def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
     subset = events_df.head(total) if max_events else events_df
 
     for idx, (_, row) in enumerate(subset.iterrows()):
-        # Build a concise prompt for Claude with the key event facts
         prompt = (
             f"You are an AIS maritime data analyst. Write a single clear, "
             f"professional sentence summarizing this vessel event for an analyst report.\n\n"
@@ -1508,27 +1130,22 @@ def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=100,  # Short summary — 1-2 sentences max
+                max_tokens=100,
                 messages=[{"role": "user", "content": prompt}]
             )
-            # Extract text from the response content block
             summary = response.content[0].text.strip()
         except Exception as e:
-            # Don't crash the whole pipeline on a single API failure
             summary = f"Summary generation failed: {str(e)[:80]}"
 
         summaries.append(summary)
 
-        # Progress indicator
         if (idx + 1) % 50 == 0:
             print(f"[AI] Summarized {idx + 1:,}/{total:,} events...", end="\r")
 
-        # Rate limiting — pause between API calls to avoid hitting limits
         time.sleep(CONFIG["ai_summary_delay_sec"])
 
     print(f"\n[AI] Summaries complete.")
 
-    # Pad remaining rows (beyond max_events) with a note
     remaining = len(events_df) - len(summaries)
     if remaining > 0:
         summaries += ["Summary not generated (batch limit reached)"] * remaining
@@ -1547,29 +1164,16 @@ def build_labeled_dataset(original_df: pd.DataFrame,
                            events_df: pd.DataFrame,
                            cols: dict) -> pd.DataFrame:
     """
-    Merge detected event labels back into the original AIS DataFrame.
-
-    New columns added to the original data (Req #6):
-      - event_id         : Unique event identifier (or None if no event)
-      - event_type       : Type of event (ARRIVAL, DEPARTURE, etc.)
-      - confidence_score : How confident the system is in this label
-      - null_flags       : Any NULL fields in this row's key data
-      - ai_summary       : Natural language description (if generated)
-
-    The merge is done on (vessel_id + timestamp-minute) to align
-    event records back to their source rows efficiently.
-
-    Req #3 : Structured output per event row
-    Req #6 : New columns in DataFrame + CSV export
-    Req #8 : CSV-compatible output format
+    Merge detected event labels into the original AIS DataFrame.
+    Adds columns: event_id, event_type, confidence_score, null_flags, ai_summary.
+    Merge key is (vessel_id + timestamp-minute) for efficient row alignment.
     """
-    print_section("BUILDING LABELED DATASET  (Req #3, #6, #8)")
+    print_section("BUILDING LABELED DATASET")
 
     col_mmsi = cols["mmsi"]
     col_time = cols["time"]
 
     if events_df is None or events_df.empty:
-        # No events detected — still add the columns so schema is consistent
         print("[OUTPUT] No events detected. Adding empty event columns.")
         original_df["event_id"]         = None
         original_df["event_type"]       = None
@@ -1579,21 +1183,14 @@ def build_labeled_dataset(original_df: pd.DataFrame,
             original_df["ai_summary"]   = None
         return original_df
 
-    # ── Build a fast lookup dictionary: (mmsi_str, ts_minute) → event row ────
-    # This is O(n) — much faster than a DataFrame merge for this use case
-    # because many original rows will NOT have a matching event.
     print("[OUTPUT] Building event lookup index...")
 
     events_df = events_df.copy()
-
-    # Add timestamp-minute key
     events_df["_key_ts"] = (pd.to_datetime(events_df["timestamp"], errors="coerce")
                              .dt.floor("min").astype(str))
 
     events_expanded = events_df.copy()
     events_expanded["_key_mmsi"] = events_expanded["vessel_id"].astype(str)
-
-    # Keep first event per (mmsi, ts-minute) key — mirrors original "first wins" logic
     events_expanded = events_expanded.drop_duplicates(
         subset=["_key_mmsi", "_key_ts"], keep="first"
     )
@@ -1608,7 +1205,6 @@ def build_labeled_dataset(original_df: pd.DataFrame,
 
     print(f"[OUTPUT] Lookup index built — {len(events_expanded):,} unique event keys.")
 
-    # ── Tag original DataFrame rows via merge (replaces 7M+ row Python loop) ──
     original_df["_key_mmsi"] = original_df[col_mmsi].astype(str)
     original_df["_key_ts"]   = (pd.to_datetime(original_df[col_time], errors="coerce")
                                  .dt.floor("min").astype(str))
@@ -1623,7 +1219,6 @@ def build_labeled_dataset(original_df: pd.DataFrame,
     if "ai_summary" not in original_df.columns:
         original_df["ai_summary"] = None
 
-    # Remove temporary key columns before export
     original_df.drop(columns=["_key_mmsi", "_key_ts"], inplace=True, errors="ignore")
 
     labeled_count = original_df["event_type"].notna().sum()
@@ -1637,35 +1232,21 @@ def build_labeled_dataset(original_df: pd.DataFrame,
 # ──────────────────────────────────────────────────────────────────────────────
 
 def export_csv(df: pd.DataFrame, filepath: str, label: str = "output"):
-    """
-    Export a DataFrame to CSV.
-
-    For large datasets (8M+ rows), we use chunksize in to_csv() to write
-    in streaming fashion — this prevents memory spikes during export.
-
-    Req #6 : Final CSV export function
-    Req #8 : Structured CSV format for downstream analytics / storage
-    """
+    """Export a DataFrame to CSV and print row count and file size."""
     print(f"[EXPORT] Writing {label} → {filepath}")
-    # chunksize here is for the CSV writer's internal buffer, not read chunks
     df.to_csv(filepath, index=False)
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     print(f"         Done — {len(df):,} rows | {size_mb:.1f} MB")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 9: PIPELINE SUMMARY / REPORT
+# SECTION 9: PIPELINE SUMMARY
 # ──────────────────────────────────────────────────────────────────────────────
 
 def print_pipeline_summary(input_path: str, labeled_df: pd.DataFrame,
                             events_df: pd.DataFrame, output_dir: str):
-    """
-    Print a human-readable summary of the pipeline run.
-    Useful for documentation, sign-off, and analyst handover.
-
-    Req #7: Documentation of the data processing pipeline and techniques.
-    """
-    print_section("PIPELINE SUMMARY  (Req #7)")
+    """Print a human-readable summary of the pipeline run."""
+    print_section("PIPELINE SUMMARY")
 
     total_rows   = len(labeled_df)
     labeled_rows = labeled_df["event_type"].notna().sum() if "event_type" in labeled_df.columns else 0
@@ -1689,7 +1270,6 @@ def print_pipeline_summary(input_path: str, labeled_df: pd.DataFrame,
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 10: MAIN PIPELINE ORCHESTRATOR
-# Ties all sections together in order.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_pipeline(input_path: str,
@@ -1697,20 +1277,8 @@ def run_pipeline(input_path: str,
                  ai_summaries: bool = False):
     """
     Full end-to-end DDT AIS processing pipeline.
-
-    Steps:
-      1. Load data (CSV / JSON / NMEA)           → Req #10
-      2. Resolve column names                    → Internal
-      3. Detect and label vessel events          → Req #1, #2, #4, #5
-      4. Generate AI summaries (optional)        → Req #9
-      5. Merge events into original dataset      → Req #3, #6
-      6. Export labeled CSV + events summary     → Req #6, #8
-      7. Print pipeline summary                  → Req #7
-
-    Args:
-        input_path   : Path to AIS input file (.csv, .json, .nmea)
-        output_dir   : Directory for output files
-        ai_summaries : If True, generate Claude AI summaries (Req #9)
+    Loads data, resolves columns, detects events, optionally generates AI summaries,
+    merges labels, and exports results to CSV.
     """
     print("\n" + "=" * 60)
     print("  DDT — GEN AI AIS EVENT DETECTION & LABELING PIPELINE")
@@ -1719,11 +1287,9 @@ def run_pipeline(input_path: str,
 
     start_time = time.time()
 
-    # ── Step 1: Load data ─────────────────────────────────────────────────────
-    print_section("LOADING DATA  (Req #10)")
+    print_section("LOADING DATA")
     df = load_file(input_path)
 
-    # ── Step 2: Resolve column names ─────────────────────────────────────────
     print_section("COLUMN RESOLUTION")
     cols = resolve_columns(df)
     print(f"  MMSI  → '{cols['mmsi']}'")
@@ -1734,56 +1300,45 @@ def run_pipeline(input_path: str,
     print(f"  COG   → {repr(cols['cog'])} {'⚠ Deviation events will be skipped' if not cols['cog'] else ''}")
     print(f"  NAME  → {repr(cols['name'])}")
 
-    # ── Step 2.5: Date filter ─────────────────────────────────────────────────
     df, date_label = prompt_date_filter(df, cols["time"])
 
-    # ── Step 2.6: Sort and deduplicate ────────────────────────────────────────
     print_section("PREPROCESSING")
     df[cols["time"]] = pd.to_datetime(df[cols["time"]], errors="coerce")
     df = df.sort_values([cols["mmsi"], cols["time"]]).reset_index(drop=True)
     before = len(df)
-    df = df.drop_duplicates(keep="first")  # only removes rows identical across every column
+    df = df.drop_duplicates(keep="first")
     removed = before - len(df)
     if removed:
         print(f"[PREP] Removed {removed:,} duplicate vessel/timestamp rows.")
     print(f"[PREP] {len(df):,} clean rows ready for processing.")
 
-    # ── Step 3: Event detection ───────────────────────────────────────────────
     events_df = detect_events(df, cols)
 
-    # ── Step 4: AI summaries (optional) ──────────────────────────────────────
     if ai_summaries and events_df is not None and not events_df.empty:
         events_df = generate_ai_summaries(events_df)
     elif ai_summaries:
         print("[AI] No events to summarize.")
 
-    # ── Step 5: Merge events into original dataset ────────────────────────────
     labeled_df = build_labeled_dataset(df, events_df, cols)
 
-    # ── Step 6: Export outputs ────────────────────────────────────────────────
-    print_section("EXPORTING OUTPUTS  (Req #6, #8)")
+    print_section("EXPORTING OUTPUTS")
     os.makedirs(output_dir, exist_ok=True)
 
     base = os.path.splitext(os.path.basename(input_path))[0]
     file_prefix = (base + "_" + date_label) if date_label != "all" else base
 
-    # Output 1: Event rows only (rows where an event was detected — compact)
     events_only = labeled_df[labeled_df["event_type"].notna()].copy()
     labeled_path = os.path.join(output_dir, file_prefix + "_events_labeled.csv")
     export_csv(events_only, labeled_path, label="Event-labeled rows")
 
-    # Output 2: Events summary (one row per event)
     if events_df is not None and not events_df.empty:
         events_path = os.path.join(output_dir, file_prefix + "_events_summary.csv")
         export_csv(events_df, events_path, label="Events summary")
     else:
-        events_path = None
         print("[EXPORT] No events to export.")
 
-    # Output 3: One-row-per-vessel status table
     export_vessel_status_table(df, events_df, output_dir, file_prefix)
 
-    # ── Step 7: Summary ───────────────────────────────────────────────────────
     print_pipeline_summary(input_path, labeled_df, events_df, output_dir)
 
     elapsed = time.time() - start_time
@@ -1795,7 +1350,6 @@ def run_pipeline(input_path: str,
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 11: COMMAND LINE INTERFACE
-# Run this script directly from the terminal.
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1808,7 +1362,6 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    # Optional: input file path (if not provided, file browser opens)
     parser.add_argument(
         "input",
         nargs="?",
@@ -1816,26 +1369,22 @@ if __name__ == "__main__":
         help="Path to AIS input file (.csv, .json, .nmea/.txt/.ais). If omitted, a file browser will open."
     )
 
-    # Optional: output directory
     parser.add_argument(
         "--output-dir", "-o",
         default="./output",
         help="Directory where output CSVs will be saved (default: ./output)"
     )
 
-    # Optional: enable AI summaries (requires ANTHROPIC_API_KEY env var)
     parser.add_argument(
         "--ai-summaries",
         action="store_true",
         default=False,
         help=(
-            "Generate natural-language AI summaries for each event (Req #9). "
-            "Requires: ANTHROPIC_API_KEY environment variable to be set. "
-            "Example: export ANTHROPIC_API_KEY=sk-ant-..."
+            "Generate natural-language AI summaries for each event. "
+            "Requires: ANTHROPIC_API_KEY environment variable."
         )
     )
 
-    # Optional: override max AI summary count
     parser.add_argument(
         "--max-summaries",
         type=int,
@@ -1845,11 +1394,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Apply CLI overrides to CONFIG
     if args.max_summaries is not None:
         CONFIG["ai_summary_max_events"] = args.max_summaries
 
-    # If no input file given, open file browser and run pipeline on the result
     if args.input is None:
         df = import_dataset()
         if df is not None:
