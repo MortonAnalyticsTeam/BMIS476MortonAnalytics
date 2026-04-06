@@ -3,15 +3,18 @@
 # 🚢 AIS Maritime Event Intelligence Platform
 
 ### GEN AI Data Processing & Analytics Solution
-**DDT Team &nbsp;|&nbsp; BMIS 476 &nbsp;|&nbsp; Spring 2026**
+
+**DDT Team** | **BMIS 476** | **Spring 2026**
 
 ---
 
-![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
-![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![AI](https://img.shields.io/badge/AI-Claude%20Sonnet-7c3aed?style=for-the-badge)
-![Scale](https://img.shields.io/badge/Scale-8M%2B%20Rows-f97316?style=for-the-badge)
-![Requirements](https://img.shields.io/badge/Requirements-10%2F10%20Met-brightgreen?style=for-the-badge)
+[![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)](https://github.com/your-username/your-repo)
+[![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![AI](https://img.shields.io/badge/AI-Claude%20Sonnet-7c3aed?style=for-the-badge)](https://anthropic.com)
+[![Scale](https://img.shields.io/badge/Scale-8M%2B%20Rows-f97316?style=for-the-badge)](https://pandas.pydata.org)
+[![Requirements](https://img.shields.io/badge/Requirements-10%2F10%20Met-brightgreen?style=for-the-badge)](https://github.com/your-username/your-repo)
+
+**Transforming Raw AIS Data into Maritime Intelligence**
 
 </div>
 
@@ -19,141 +22,192 @@
 
 ## 📋 Table of Contents
 
-- [What This System Does](#what-this-system-does)
-- [Key Capabilities](#key-capabilities)
-- [Requirements Coverage](#requirements-coverage)
-- [Getting Started](#getting-started)
-- [Running the Pipeline](#running-the-pipeline)
-- [How It Works — Pipeline Breakdown](#how-it-works)
-- [Output Files](#output-files)
-- [Project Structure](#project-structure)
-- [Technical Notes](#technical-notes)
+- [🎯 What This System Does](#what-this-system-does)
+- [✨ Key Capabilities](#key-capabilities)
+- [✅ Requirements Coverage](#requirements-coverage)
+- [🚀 Getting Started](#getting-started)
+- [▶️ Running the Pipeline](#running-the-pipeline)
+- [🔧 How It Works — Pipeline Breakdown](#how-it-works)
+- [📊 Output Files](#output-files)
+- [📁 Project Structure](#project-structure)
+- [📝 Technical Notes](#technical-notes)
 
 ---
 
 <a id="what-this-system-does"></a>
-## 📌 What This System Does
+## 🎯 What This System Does
 
-The **AIS Maritime Event Intelligence Platform** ingests raw vessel tracking data and automatically detects, labels, and explains significant maritime events using AI — transforming millions of raw GPS pings into a structured, analyst-ready dataset.
+The **AIS Maritime Event Intelligence Platform** ingests raw vessel tracking data and automatically detects, labels, and explains significant maritime events using AI — transforming millions of raw GPS pings into structured, analyst-ready datasets.
 
-It is purpose-built to handle **real-world AIS datasets at scale** (8 million+ rows), with performance-optimized processing that runs in seconds rather than hours.
+<div align="center">
 
-### Detected Event Types
+**Purpose-Built for Scale** 🚀  
+*Handles real-world AIS datasets (8M+ rows) with lightning-fast processing*
 
-| Event | What It Means |
-|:---|:---|
-| `ARRIVAL` | A vessel decelerates to near-zero after sustained movement |
-| `DEPARTURE` | A vessel accelerates out of a stationary or slow state |
-| `ANCHORING` | A vessel holds near-stationary position across multiple pings |
-| `ROUTE_DEVIATION` | A sudden, significant change in heading is detected |
-| `PROXIMITY` | Two or more vessels come within a configured distance of each other |
+</div>
+
+### 🔍 Detected Event Types
+
+| Event Type | Description | Business Impact |
+|:---:|:---:|:---:|
+| `🚢 ARRIVAL` | Vessel decelerates to near-zero after sustained movement | Port operations, cargo tracking |
+| `🛳️ DEPARTURE` | Vessel accelerates from stationary or slow state | Route optimization, scheduling |
+| `⚓ ANCHORING` | Vessel holds near-stationary position across multiple pings | Anchorage management, safety |
+| `🧭 ROUTE_DEVIATION` | Sudden significant change in heading | Navigation alerts, security |
+| `📡 PROXIMITY` | Two+ vessels within configured distance | Collision avoidance, convoy tracking |
 
 ---
 
 <a id="key-capabilities"></a>
 ## ✨ Key Capabilities
 
-| Capability | Details |
+<div align="center">
+
+| 🚀 **Performance** | 🤖 **AI Integration** | 📊 **Data Handling** | 🔧 **Flexibility** |
+|:---:|:---:|:---:|:---:|
+| 8M+ rows processed in seconds | Claude Sonnet AI summaries | CSV, JSON, NMEA support | Auto column mapping |
+| Vectorized operations | Plain-English explanations | Geographic region naming | Configurable thresholds |
+| Memory-efficient processing | Rate-limited API calls | Date range filtering | Multi-format output |
+
+</div>
+
+### Core Features
+
+| **Capability** | **Description** |
 |:---|:---|
-| **AI-Powered Summaries** | Claude Sonnet generates a plain-English description of every detected event |
-| **8M+ Row Support** | Vectorized pandas/NumPy processing — no row-by-row loops |
-| **Three Input Formats** | Accepts CSV, JSON, and raw NMEA AIS radio sentence files |
-| **Auto Column Mapping** | Resolves column names automatically — works with any AIS schema |
-| **Named Maritime Regions** | Converts raw lat/lon to human-readable locations (e.g. *"Chesapeake Bay"*) |
-| **Vessel Lookup Tool** | Query any vessel by name or MMSI for a full plain-English status report |
-| **Date Filtering** | Process a single day or range rather than an entire multi-year dataset |
-| **Structured CSV Output** | Three clean output files ready for dashboards or further analysis |
-| **Zero Data Leakage** | Full datasets stay in memory only — nothing large is written to the repo |
-| **Configurable** | All thresholds and settings live in a single `CONFIG` block |
+| **🧠 AI-Powered Summaries** | Claude Sonnet generates plain-English descriptions for every detected event |
+| **⚡ High-Performance Processing** | Vectorized pandas/NumPy operations handle massive datasets without loops |
+| **📁 Multi-Format Input** | Accepts CSV, JSON, and raw NMEA AIS radio sentence files |
+| **🔍 Intelligent Mapping** | Automatically resolves column names across different AIS data schemas |
+| **🌍 Geographic Context** | Converts raw coordinates to named maritime regions (e.g., "Chesapeake Bay") |
+| **🔎 Vessel Queries** | Interactive tools to lookup vessels by name or MMSI with status reports |
+| **📅 Temporal Filtering** | Process specific dates or ranges instead of entire datasets |
+| **📈 Structured Output** | Three clean CSV files optimized for dashboards and analytics |
+| **🔒 Data Security** | Full datasets remain in memory only — no large files in repository |
+| **⚙️ Full Configurability** | All thresholds and settings in a single, tunable configuration block |
 
 ---
 
 <a id="requirements-coverage"></a>
 ## ✅ Requirements Coverage
 
-All 10 project requirements have been fully implemented.
+<div align="center">
+
+**🎯 100% Requirements Met**  
+*All 10 project requirements fully implemented and tested*
+
+</div>
 
 | # | Priority | Requirement | Status |
-|:---:|:---:|:---|:---:|
-| 1 | 🔴 Critical | Event Labeling GenAI System | ✅ Complete |
-| 2 | 🔴 Critical | Identify Location of Shipments | ✅ Complete |
-| 3 | 🟡 High | Structured Event Data Output | ✅ Complete |
-| 4 | 🟡 High | Event Detection and Labeling | ✅ Complete |
-| 5 | 🟡 High | Event Object Generation | ✅ Complete |
-| 6 | 🟡 High | Data Formatted in New Rows + CSV Export | ✅ Complete |
-| 7 | 🔴 Critical | Documentation | ✅ Complete |
-| 8 | 🟡 High | Data Labeling Output Format (CSV) | ✅ Complete |
-| 9 | 🟡 High | Natural Language AI Event Summary | ✅ Complete |
-| 10 | 🟡 High | System Compatibility (CSV, JSON, NMEA) | ✅ Complete |
+|:---:|:---:|:---:|:---:|
+| 1 | 🔴 **Critical** | Event Labeling GenAI System | ✅ **Complete** |
+| 2 | 🔴 **Critical** | Identify Location of Shipments | ✅ **Complete** |
+| 3 | 🟡 **High** | Structured Event Data Output | ✅ **Complete** |
+| 4 | 🟡 **High** | Event Detection and Labeling | ✅ **Complete** |
+| 5 | 🟡 **High** | Event Object Generation | ✅ **Complete** |
+| 6 | 🟡 **High** | Data Formatted in New Rows + CSV Export | ✅ **Complete** |
+| 7 | 🔴 **Critical** | Documentation | ✅ **Complete** |
+| 8 | 🟡 **High** | Data Labeling Output Format (CSV) | ✅ **Complete** |
+| 9 | 🟡 **High** | Natural Language AI Event Summary | ✅ **Complete** |
+| 10 | 🟡 **High** | System Compatibility (CSV, JSON, NMEA) | ✅ **Complete** |
 
 ---
 
 <a id="getting-started"></a>
-## 💻 Getting Started
+## � Getting Started
 
-### 1. Clone the Repository
+<div align="center">
+
+### Quick Start Guide
+*Get up and running in 5 minutes*
+
+</div>
+
+### 📥 1. Prerequisites
+- **Python 3.8+** → [Download here](https://python.org)
+- **Anthropic API Key** → [Get from Anthropic](https://console.anthropic.com) *(optional for AI summaries)*
+
+### 📦 2. Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/your-username/your-repo-name.git
 cd your-repo-name
-```
 
-### 2. Install Dependencies
-
-```bash
+# Install dependencies
 pip install pandas anthropic pyais
 ```
 
-> **Dependency notes:**
-> - `numpy` — included automatically with pandas, no separate install needed
-> - `tkinter` — bundled with Python; if missing, run `pip install tk`
-> - `pyais` — only required for NMEA-format AIS files
+### 🔑 3. Configure API Key *(for AI features)*
 
-### 3. Configure Your API Key *(required for AI summaries)*
+**Windows:**
+```cmd
+set ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
 
-**Mac / Linux**
+**Mac/Linux:**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-**Windows**
-```cmd
-set ANTHROPIC_API_KEY=sk-ant-your-key-here
-```
+> **💡 Note:** The system works without AI summaries if no API key is provided.
+
+### 📋 Package Details
+
+| Package | Purpose | Installation |
+|:---:|:---:|:---:|
+| `pandas` | Data manipulation & analysis | Included |
+| `anthropic` | Claude AI API client | `pip install anthropic` |
+| `pyais` | NMEA AIS decoding | `pip install pyais` |
+| `numpy` | Numerical operations | Auto-installed with pandas |
 
 ---
 
 <a id="running-the-pipeline"></a>
 ## ▶️ Running the Pipeline
 
-### Option A — File Browser *(Recommended)*
+<div align="center">
 
-Run the script with no arguments. A file picker window opens automatically — just select your data file.
+### Three Ways to Run
+*Choose the method that fits your workflow*
+
+</div>
+
+### 🎯 Method 1: Interactive File Browser *(Recommended)*
 
 ```bash
-python ddt_ais_pipeline.py
+python PJ_Prototype1_True.py
 ```
 
-The dataset is loaded entirely into memory. Nothing large is ever written back to the project folder, keeping the repository clean.
+**What happens:**
+- Opens a file picker dialog
+- Select your AIS dataset
+- Automatic processing with progress updates
+- Dataset stays in memory only
 
-You can also drive it directly from a script or notebook:
+### 💻 Method 2: Command Line
+
+```bash
+# Basic processing
+python PJ_Prototype1_True.py your_data.csv --output-dir ./output
+
+# With AI event summaries
+python PJ_Prototype1_True.py your_data.csv --output-dir ./output --ai-summaries
+
+# Limit AI summaries (control costs)
+python PJ_Prototype1_True.py your_data.csv --output-dir ./output --ai-summaries --max-summaries 100
+```
+
+### 🐍 Method 3: Programmatic (Notebooks/Scripts)
 
 ```python
+from PJ_Prototype1_True import import_dataset, run_pipeline_from_df
+
+# Interactive import
 df = import_dataset()
+
+# Process the data
 labeled_df, events_df = run_pipeline_from_df(df)
-```
-
-### Option B — Command Line
-
-```bash
-# Standard run
-python ddt_ais_pipeline.py your_data.csv --output-dir ./output
-
-# With AI-generated event summaries
-python ddt_ais_pipeline.py your_data.csv --output-dir ./output --ai-summaries
-
-# Limit the number of AI summaries (to manage API cost)
-python ddt_ais_pipeline.py your_data.csv --output-dir ./output --ai-summaries --max-summaries 100
 ```
 
 ---
@@ -331,56 +385,116 @@ Makes the script fully runnable from the command line. If no input file is given
 ---
 
 <a id="output-files"></a>
-## 📁 Output Files
+## � Output Files
 
-Three structured files are produced per run, plus a lightweight preview file safe for version control. All output filenames are prefixed with the source filename and selected date(s).
+<div align="center">
+
+### Three Structured CSV Files + Preview
+*Optimized for analytics tools and dashboards*
+
+</div>
+
+### 📂 Output Directory Structure
 
 ```
 output/
-├── *_events_labeled.csv      ← Full AIS rows where at least one event was detected
-├── *_events_summary.csv      ← One row per event — compact, dashboard-ready
-└── *_vessel_status.csv       ← One row per vessel: last position, region, event totals
+├── [dataset]_events_labeled.csv    ← Complete dataset with event annotations
+├── [dataset]_events_only.csv       ← Condensed events-only dataset
+└── [dataset]_vessel_status.csv     ← Fleet-wide status snapshot
 
 preview/
-└── your_data_preview.csv     ← First 10 rows only — safe to commit to GitHub
+└── [dataset]_preview.csv           ← Sample data (safe for version control)
 ```
 
-> **Recommended `.gitignore` entries** to prevent large data files from being pushed:
-> ```gitignore
-> /output/
-> *.csv
-> !preview/*_preview.csv
-> ```
+### 📋 File Details
+
+| File | Contents | Best For |
+|:---:|:---:|:---|
+| **Events Labeled** | Original AIS data + event columns | Comprehensive analysis |
+| **Events Only** | One row per event | Dashboard visualization |
+| **Vessel Status** | One row per vessel | Fleet monitoring |
+| **Preview** | First 10 rows | Data structure reference |
+
+### 🔒 Data Security
+
+> **Important:** Large datasets remain in memory only — no data files are written to the repository. Only small preview files are safe to commit.
+
+**Recommended `.gitignore`:**
+```gitignore
+/output/
+/*.csv
+!/preview/*_preview.csv
+```
 
 ---
 
 <a id="project-structure"></a>
-## 🗂️ Project Structure
+## � Project Structure
+
+<div align="center">
 
 ```
-your-repo/
-├── ddt_ais_pipeline.py       ← Main pipeline script (all 11 sections)
-├── preview/
-│   └── *_preview.csv         ← Small sample files (safe to commit)
-├── output/                   ← Generated outputs (gitignored)
-└── README.md                 ← This document
+BMIS476MortonAnalytics/
+├── 📄 PJ_Prototype1_True.py       # Main pipeline script (11 sections)
+├── 📖 README.md                   # Project documentation
+├── 💡 Example_from_Morton.py      # Usage examples and scripts
+├── 📂 preview/                    # Sample data previews (git-safe)
+└── 📂 output/                     # Generated results (gitignored)
 ```
 
----
+</div>
+
+### 📋 File Descriptions
+
+| File/Folder | Purpose |
+|:---:|:---|
+| `PJ_Prototype1_True.py` | Complete AIS processing pipeline with all 11 modular sections |
+| `README.md` | Comprehensive documentation and setup guide |
+| `Example_from_Morton.py` | Sample scripts demonstrating usage patterns |
+| `preview/` | Auto-generated 10-row data samples (safe to commit) |
+| `output/` | Generated CSV files (should be gitignored) |
 
 <a id="technical-notes"></a>
 ## 📝 Technical Notes
 
-- **Memory safety** — When using the file browser, the full dataset is held in memory only and never written to the project directory. This prevents large-file git push errors and keeps the repository clean.
-- **Schema flexibility** — Column names are resolved automatically from aliases. If your AIS data uses non-standard field names, add aliases to the `CONFIG` block in `ddt_ais_pipeline.py`.
-- **AI summaries** — Require the `ANTHROPIC_API_KEY` environment variable and the `anthropic` Python package. The pipeline uses `claude-sonnet-4-5` for generation.
-- **NMEA support** — Requires `pyais`: `pip install pyais`
-- **Date filter guidance** — When working with the full 8M+ row dataset, use the date-range option to filter to a specific day during testing. Full-dataset runs require sufficient RAM and processing time.
+<div align="center">
+
+### System Architecture & Performance
+
+</div>
+
+### ⚡ Performance Characteristics
+
+| Aspect | Specification |
+|:---:|:---|
+| **Dataset Scale** | 8M+ rows processed in seconds |
+| **Processing Method** | Vectorized pandas/NumPy operations |
+| **Memory Usage** | In-memory processing, no disk writes for large files |
+| **AI Integration** | Rate-limited Claude API calls (configurable limits) |
+
+### 🔧 Technical Details
+
+- **🔒 Memory Safety:** Datasets remain in RAM only — prevents repository bloat
+- **🔄 Schema Flexibility:** Automatic column name resolution via configurable aliases
+- **🤖 AI Features:** Require `ANTHROPIC_API_KEY` environment variable
+- **📡 NMEA Support:** Optional `pyais` package for raw AIS message decoding
+- **📅 Date Filtering:** Process specific time ranges for focused analysis
+- **⚙️ Configuration:** All thresholds centralized in `CONFIG` dictionary
+
+### 🛠️ Dependencies
+
+| Package | Version | Purpose |
+|:---:|:---:|:---|
+| `pandas` | Latest | Data manipulation and analysis |
+| `anthropic` | Latest | Claude AI API integration |
+| `pyais` | Latest | NMEA AIS message parsing |
+| `numpy` | Auto | Numerical computing (via pandas) |
 
 ---
 
 <div align="center">
 
-**DDT Team &nbsp;·&nbsp; BMIS 476 &nbsp;·&nbsp; GEN AI Data Processing & Analytics Solution**
+**🚢 Developed by DDT Team for BMIS 476 Spring 2026**  
+*Transforming AIS data into maritime intelligence*
 
 </div>

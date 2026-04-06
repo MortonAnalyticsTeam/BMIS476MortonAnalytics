@@ -1,13 +1,61 @@
 """
+<<<<<<< HEAD
+=======
+================================================================================
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 DDT — GEN AI DATA PROCESSING AND ANALYTICS SOLUTION
 AIS Vessel Event Detection, Labeling & AI Summary Pipeline
 Team: DDT | Version: 2.0
 
+<<<<<<< HEAD
 Install dependencies:
     pip install pandas numpy anthropic pyais
 Set API key:
     Windows : set ANTHROPIC_API_KEY=your_key_here
     Mac/Linux: export ANTHROPIC_API_KEY=your_key_here
+=======
+SYSTEM REQUIREMENTS COVERAGE:
+  Req #1  [CRITICAL] Event Labeling GenAI System
+                     → Full AI-powered detection and labeling pipeline
+  Req #2  [CRITICAL] Identify location of shipments
+                     → Lat/Lon + timestamp tracking per vessel
+  Req #3  [HIGH]     Event Data Output
+                     → Structured output: Vessel ID, Event Type, Timestamp,
+                       Location, Confidence Score, NULL flags
+  Req #4  [HIGH]     Event Detection and Labeling
+                     → Detects: ARRIVAL, DEPARTURE, ANCHORING,
+                       ROUTE_DEVIATION, PROXIMITY
+  Req #5  [HIGH]     Event Object Generation
+                     → Generates: event_id, timestamp, location,
+                       vessel(s), event_type, confidence_score
+  Req #6  [HIGH]     Data Formatted in New Rows
+                     → New columns appended to original DataFrame + CSV export
+  Req #7  [CRITICAL] Documentation
+                     → Inline comments and docstrings throughout (see below)
+  Req #8  [HIGH]     Data Labeling Output Format
+                     → Structured CSV output for downstream analytics
+  Req #9  [HIGH]     Natural Language AI Event Summary
+                     → Claude API generates plain-English summaries per event
+  Req #10 [HIGH]     System Compatibility
+                     → Reads CSV, JSON, and NMEA AIS datasets
+
+PERFORMANCE NOTES:
+  - CSV loading uses chunked reading with dtype optimization
+  - Event detection uses vectorized pandas operations (no row-by-row loops)
+  - Proximity detection uses spatial blocking by time window
+  - AI summaries are batched and rate-limited to avoid API overload
+  - All intermediate exports write in streaming chunks
+
+DEPENDENCIES:
+  pip install pandas anthropic pyais
+  (pyais only required for NMEA input files)
+
+USAGE:
+  python ddt_ais_pipeline.py your_data.csv --output-dir ./output
+  python ddt_ais_pipeline.py your_data.csv --output-dir ./output --ai-summaries
+  python ddt_ais_pipeline.py your_data.json --output-dir ./output --ai-summaries
+================================================================================
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 """
 
 import os
@@ -38,6 +86,16 @@ warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 1A: CONFIGURATION
+<<<<<<< HEAD
+=======
+# This central configuration block serves as the control panel for our entire
+# maritime analytics pipeline. Here we define all the tunable parameters that
+# govern event detection sensitivity, performance optimizations, and data
+# compatibility. By keeping everything in one location, we ensure consistency
+# and make it easy to adapt the system for different AIS datasets or operational
+# requirements. Each setting is carefully chosen based on maritime standards
+# and real-world testing.
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 # ──────────────────────────────────────────────────────────────────────────────
 CONFIG = {
     "arrival_speed_max":    1.0,
@@ -114,12 +172,22 @@ MARITIME_REGIONS = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
+<<<<<<< HEAD
 # SECTION 1B: DATA IMPORT
 # Opens a file browser, loads the dataset into memory, and saves a small preview.
 # Usage:
 #   df = import_dataset()
 #   labeled_df, events_df = run_pipeline_from_df(df)
 #   labeled_df, events_df = run_pipeline_from_df(df, ai_summaries=True)
+=======
+# Section 1B: DATA IMPORT FUNCTION
+# This user-friendly import system provides multiple ways to bring AIS data
+# into our analytics pipeline. Whether you're working with massive 8M+
+# row datasets or smaller test files, this section handles the loading process
+# with memory efficiency and user convenience in mind. We support interactive
+# file browsing, direct path specification, and programmatic access for
+# integration with notebooks and automated workflows.
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 # ──────────────────────────────────────────────────────────────────────────────
 
 import tkinter as tk
@@ -859,7 +927,17 @@ def resolve_columns(df: pd.DataFrame) -> dict:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 5: EVENT DETECTION ENGINE
+<<<<<<< HEAD
 # Vectorized detection of ARRIVAL, DEPARTURE, ANCHORING, and ROUTE_DEVIATION.
+=======
+# This section implements the core intelligence of our maritime event detection system.
+# Using a combination of AI-enhanced rule-based algorithms, we automatically identify
+# and classify five critical types of vessel activities: arrivals, departures, anchoring,
+# route deviations, and vessel proximities. All detection logic is implemented using
+# vectorized pandas and NumPy operations, enabling us to process millions of AIS data
+# rows in seconds rather than hours. This performance optimization is crucial for handling
+# real-world datasets at scale while maintaining accuracy and reliability.
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 # ──────────────────────────────────────────────────────────────────────────────
 
 def detect_events(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
@@ -1080,7 +1158,16 @@ def _detect_route_deviations(df: pd.DataFrame, cols: dict) -> list:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SECTION 6: AI NATURAL LANGUAGE SUMMARIES
+<<<<<<< HEAD
 # Calls the Claude API to generate a plain-English summary for each event.
+=======
+# This section leverages Anthropic's Claude Sonnet AI model to transform raw
+# event data into human-readable narratives. For each detected maritime event,
+# we generate a concise 1-2 sentence plain-English summary that explains what
+# happened, when, where, and why it matters. This AI-powered feature bridges
+# the gap between technical data and business intelligence, making complex
+# vessel tracking information accessible to non-technical stakeholders.
+>>>>>>> 72973772c747e00e8cad2af31ab30f4eac559c0b
 # ──────────────────────────────────────────────────────────────────────────────
 
 def generate_ai_summaries(events_df: pd.DataFrame) -> pd.DataFrame:
