@@ -10,7 +10,7 @@
 
 [![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)](https://github.com/your-username/your-repo)
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![AI](https://img.shields.io/badge/AI-Claude%20Sonnet-7c3aed?style=for-the-badge)](https://anthropic.com)
+[![AI](https://img.shields.io/badge/AI-Template%20Summaries-7c3aed?style=for-the-badge)](https://anthropic.com)
 [![Scale](https://img.shields.io/badge/Scale-8M%2B%20Rows-f97316?style=for-the-badge)](https://pandas.pydata.org)
 [![Requirements](https://img.shields.io/badge/Requirements-10%2F10%20Met-brightgreen?style=for-the-badge)](https://github.com/your-username/your-repo)
 
@@ -63,11 +63,11 @@ The **AIS Maritime Event Intelligence Platform** ingests raw vessel tracking dat
 
 <div align="center">
 
-| 🚀 **Performance** | 🤖 **AI Integration** | 📊 **Data Handling** | 🔧 **Flexibility** |
+| 🚀 **Performance** | 🤖 **AI Summaries** | 📊 **Data Handling** | 🔧 **Flexibility** |
 |:---:|:---:|:---:|:---:|
-| 8M+ rows processed in seconds | Claude Sonnet AI summaries | CSV, JSON, NMEA support | Auto column mapping |
-| Vectorized operations | Plain-English explanations | Geographic region naming | Configurable thresholds |
-| Memory-efficient processing | Rate-limited API calls | Date range filtering | Multi-format output |
+| 8M+ rows processed in seconds | Template-based event summaries | CSV, JSON, NMEA support | Auto column mapping |
+| Vectorized operations | Plain-English route deviation descriptions | Geographic region naming | Configurable thresholds |
+| Memory-efficient processing | No API key required | Date range filtering | Multi-format output |
 
 </div>
 
@@ -75,14 +75,14 @@ The **AIS Maritime Event Intelligence Platform** ingests raw vessel tracking dat
 
 | **Capability** | **Description** |
 |:---|:---|
-| **🧠 AI-Powered Summaries** | Claude Sonnet generates plain-English descriptions for every detected event |
+| **🧠 Template-Based Summaries** | Plain-English event descriptions generated from structured templates — no API key needed |
 | **⚡ High-Performance Processing** | Vectorized pandas/NumPy operations handle massive datasets without loops |
 | **📁 Multi-Format Input** | Accepts CSV, JSON, and raw NMEA AIS radio sentence files |
 | **🔍 Intelligent Mapping** | Automatically resolves column names across different AIS data schemas |
 | **🌍 Geographic Context** | Converts raw coordinates to named maritime regions (e.g., "Chesapeake Bay") |
 | **🔎 Vessel Queries** | Interactive tools to lookup vessels by name or MMSI with status reports |
 | **📅 Temporal Filtering** | Process specific dates or ranges instead of entire datasets |
-| **📈 Structured Output** | Three clean CSV files optimized for dashboards and analytics |
+| **📈 Flexible Output** | Choose between a single Shipment Report or three separate CSV files at runtime |
 | **🔒 Data Security** | Full datasets remain in memory only — no large files in repository |
 | **⚙️ Full Configurability** | All thresholds and settings in a single, tunable configuration block |
 
@@ -135,22 +135,14 @@ git clone https://github.com/your-username/your-repo-name.git
 cd your-repo-name
 
 # Install dependencies
-pip install pandas anthropic pyais
+pip install pandas numpy anthropic pyais
 ```
 
-### 🔑 3. Configure API Key *(for AI features)*
+### 🔑 3. API Key *(optional — not required for summaries)*
 
-**Windows:**
-```cmd
-set ANTHROPIC_API_KEY=sk-ant-your-key-here
-```
+Event summaries are generated from templates and **require no API key**. The `anthropic` package is listed as a dependency for potential future Claude API integration, but the current pipeline works fully offline.
 
-**Mac/Linux:**
-```bash
-export ANTHROPIC_API_KEY=sk-ant-your-key-here
-```
-
-> **💡 Note:** The system works without AI summaries if no API key is provided.
+> **💡 Note:** All 10 requirements are met without setting an API key.
 
 ### 📋 Package Details
 
@@ -180,10 +172,12 @@ python PJ_Prototype1_True.py
 ```
 
 **What happens:**
-- Opens a file picker dialog
-- Select your AIS dataset
-- Automatic processing with progress updates
-- Dataset stays in memory only
+1. Opens a file picker dialog — select your AIS dataset
+2. Displays dataset shape and a preview in the console
+3. Prompts you to process all rows or filter to specific date(s)
+4. Asks whether to generate event summaries (`y/n`)
+5. Asks which output format: Shipment Report or Separate Files
+6. Runs detection and exports results — dataset stays in memory only
 
 ### 💻 Method 2: Command Line
 
@@ -311,14 +305,14 @@ Every event is emitted as a structured record containing: `event_id`, `vessel_id
 
 ---
 
-### Section 6 — AI Natural Language Summaries
-> *Plain-English event descriptions via Claude — Req #9*
+### Section 6 — Natural Language Event Summaries
+> *Plain-English event descriptions built from templates — Req #9*
 
-Each detected event is passed to the Claude API (`claude-sonnet-4-5`) with a structured prompt containing the event type, vessel details, timestamp, coordinates, and confidence score. The model returns a natural-language sentence that is stored in the `ai_summary` column.
+Each detected `ROUTE_DEVIATION` event receives a natural-language summary built from a structured template using the event fields already in the DataFrame (vessel name, region, bearing change, turn direction, speed). Summaries are generated entirely offline — **no API key or network connection required**.
 
-- Summary count is capped (default: 500) to keep runtime and API cost predictable
-- Requests are rate-limited to avoid API throttling
-- The entire section skips gracefully if no API key is configured
+- Route deviation summaries include: vessel name, region, timestamp, degrees turned, turn direction, COG before/after, and speed
+- Other event types (ARRIVAL, DEPARTURE, ANCHORING) are tagged but not summarized in this step
+- The `ai_summary` column is populated in the events DataFrame and merged back into the labeled dataset
 
 ---
 
@@ -333,10 +327,11 @@ Builds a fast lookup keyed on `(vessel_id, timestamp_minute)` and stamps each or
 |:---|:---|
 | `event_id` | Unique identifier, e.g. `EVT-3A9F12BC` |
 | `event_type` | One of: `ARRIVAL`, `DEPARTURE`, `ANCHORING`, `ROUTE_DEVIATION`, `PROXIMITY` |
+| `event_label` | Human-readable label for route deviations, e.g. `Turned 72° to starboard (COG 045°→117°) at 8.3 kts` |
 | `confidence_score` | Rule-based reliability score from `0.0` to `1.0` |
 | `null_flags` | Any missing key fields detected in this row |
 | `region_name` | Human-readable maritime region name |
-| `ai_summary` | Plain-English description of the event (if AI summaries are enabled) |
+| `ai_summary` | Plain-English description of the event (route deviations only) |
 
 ---
 
@@ -379,28 +374,42 @@ Makes the script fully runnable from the command line. If no input file is given
 |:---|:---|
 | `input` *(optional)* | Path to AIS data file — omit to open the file browser |
 | `--output-dir` / `-o` | Output directory for CSV files (default: `./output`) |
-| `--ai-summaries` | Enable Claude AI-generated event summaries |
-| `--max-summaries` | Override the CONFIG cap on AI summary count |
+| `--ai-summaries` | Enable template-based plain-English event summaries (Req #9) |
+| `--max-summaries` | Override the CONFIG cap on summary count |
+
+> **Note:** When no input file is given, the pipeline prompts you to choose AI summaries and output format interactively — the `--ai-summaries` flag is only needed for scripted/automated runs.
 
 ---
 
 <a id="output-files"></a>
-## � Output Files
+## 📂 Output Files
 
 <div align="center">
 
-### Three Structured CSV Files + Preview
+### Two Output Modes — Chosen Interactively at Runtime
 *Optimized for analytics tools and dashboards*
 
 </div>
 
-### 📂 Output Directory Structure
+The pipeline asks you to choose an output format each time it runs. Both modes also write a small preview file.
+
+### 📂 Mode 1: Shipment Report *(single-file)*
 
 ```
 output/
-├── [dataset]_events_labeled.csv    ← Complete dataset with event annotations
-├── [dataset]_events_only.csv       ← Condensed events-only dataset
-└── [dataset]_vessel_status.csv     ← Fleet-wide status snapshot
+└── [dataset]_shipment_report.csv   ← One row per vessel per event type, with full context
+
+preview/
+└── [dataset]_preview.csv           ← Sample data (safe for version control)
+```
+
+### 📂 Mode 2: Separate Files
+
+```
+output/
+├── [dataset]_events_labeled.csv    ← Event-tagged rows only (rows that match an event)
+├── [dataset]_events_summary.csv    ← One row per detected event
+└── [dataset]_vessel_status.csv     ← Fleet-wide status snapshot (one row per vessel)
 
 preview/
 └── [dataset]_preview.csv           ← Sample data (safe for version control)
@@ -410,10 +419,11 @@ preview/
 
 | File | Contents | Best For |
 |:---:|:---:|:---|
-| **Events Labeled** | Original AIS data + event columns | Comprehensive analysis |
-| **Events Only** | One row per event | Dashboard visualization |
-| **Vessel Status** | One row per vessel | Fleet monitoring |
-| **Preview** | First 10 rows | Data structure reference |
+| **Shipment Report** | One row per vessel+event type — count, time range, confidence, AI summary, destination/ETA | Single-sheet analyst handover |
+| **Events Labeled** | Only the AIS rows that matched a detected event, with all label columns | Focused event analysis |
+| **Events Summary** | One row per raw detected event | Dashboard visualization |
+| **Vessel Status** | One row per vessel — last position, region, activity, ping count, event count | Fleet monitoring |
+| **Preview** | First 10 rows of the input dataset | Data structure reference |
 
 ### 🔒 Data Security
 
@@ -476,10 +486,11 @@ BMIS476MortonAnalytics/
 
 - **🔒 Memory Safety:** Datasets remain in RAM only — prevents repository bloat
 - **🔄 Schema Flexibility:** Automatic column name resolution via configurable aliases
-- **🤖 AI Features:** Require `ANTHROPIC_API_KEY` environment variable
+- **🧠 Offline Summaries:** Template-based event descriptions require no API key or network connection
 - **📡 NMEA Support:** Optional `pyais` package for raw AIS message decoding
 - **📅 Date Filtering:** Process specific time ranges for focused analysis
 - **⚙️ Configuration:** All thresholds centralized in `CONFIG` dictionary
+- **📋 Interactive Runtime:** Date filter, summary generation, and output format are all chosen interactively
 
 ### 🛠️ Dependencies
 
